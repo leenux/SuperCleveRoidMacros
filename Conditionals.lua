@@ -2358,18 +2358,54 @@ function CleveRoids.ValidateRangedTimer(operator, amount)
     return false
 end
 
+-- Auto Shot spell id (vanilla / TWoW). Same as HunterSpam.AUTO_SHOT_ID.
+local AUTO_SHOT_SPELL_ID = 75
+
+-- SuperWoW / Nampower: Auto Shot aim windup via GetCurrentCastingInfo.
+-- casting=1 with autoId/visId=75 and no real castId means the client is winding
+-- Auto Shot (CastSpell is swallowed). Replaces Quiver.PredMidShot for macros.
+function CleveRoids.IsAutoShotAiming()
+    if type(GetCurrentCastingInfo) ~= "function" then
+        return false
+    end
+    local castId, visId, autoId, casting = GetCurrentCastingInfo()
+    if casting ~= 1 then
+        return false
+    end
+    if autoId ~= AUTO_SHOT_SPELL_ID and visId ~= AUTO_SHOT_SPELL_ID then
+        return false
+    end
+    -- Aimed/Steady/Multi occupy castId; that is a real cast, not Auto windup.
+    if castId and castId ~= 0 and castId ~= AUTO_SHOT_SPELL_ID then
+        return false
+    end
+    return true
+end
+
+local function hasAutoShotClipGate()
+    if type(GetCurrentCastingInfo) ~= "function" then
+        return false
+    end
+    local _, class = UnitClass("player")
+    if class == "HUNTER" then
+        return true
+    end
+    local _, visId, autoId = GetCurrentCastingInfo()
+    return autoId == AUTO_SHOT_SPELL_ID or visId == AUTO_SHOT_SPELL_ID
+end
+
 -- Validate if casting the action's spell NOW will NOT clip the ranged auto-shot.
 --
--- With Quiver (hunter): match CastNoClip — allow anytime except auto-shot windup
--- (PredMidShot = shooting and not reloading). Do NOT require SP_SwingTimer
+-- Hunter + SuperWoW/Nampower GetCurrentCastingInfo: match CastNoClip — allow
+-- anytime except Auto Shot aim windup. Do NOT require SP_SwingTimer
 -- remaining >= castTime: Aimed/Steady often exceed weapon speed, so that check
 -- would permanently block cast-time hunter shots during a healthy reload window.
 --
--- Without Quiver: fall back to SP_SwingTimer remaining >= castTime for cast-time
--- spells; instants pass (cannot detect windup without Quiver).
+-- Otherwise: fall back to SP_SwingTimer remaining >= castTime for cast-time
+-- spells; instants pass (no windup signal without GetCurrentCastingInfo).
 function CleveRoids.ValidateNoRangedClip(conditionals)
-    if Quiver and Quiver.PredMidShot then
-        return not Quiver.PredMidShot()
+    if hasAutoShotClipGate() then
+        return not CleveRoids.IsAutoShotAiming()
     end
 
     local remaining, rangedSpeed = CleveRoids.GetRangedTimerRaw()
@@ -2383,7 +2419,7 @@ function CleveRoids.ValidateNoRangedClip(conditionals)
 
     if remaining == nil then
         if st_timerRangeMax == nil and not CleveRoids._rangedClipErrorShown then
-            DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[SuperCleveRoidMacros]|r The [norangedclip] conditional requires Quiver (hunters) or SP_SwingTimer. Quiver windup is preferred for Steady/Aimed. SP_SwingTimer: https://github.com/jrc13245/SP_SwingTimer", 1, 0.5, 0.5)
+            DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[SuperCleveRoidMacros]|r The [norangedclip] conditional requires SuperWoW/Nampower GetCurrentCastingInfo (hunters) or SP_SwingTimer. SP_SwingTimer: https://github.com/jrc13245/SP_SwingTimer", 1, 0.5, 0.5)
             CleveRoids._rangedClipErrorShown = true
         end
         return true
@@ -2392,9 +2428,9 @@ function CleveRoids.ValidateNoRangedClip(conditionals)
     return remaining >= castTime
 end
 
--- [midshot] / [nomidshot]: Quiver auto-shot windup (shooting, not reloading)
+-- [midshot] / [nomidshot]: Auto Shot aim windup (SuperWoW/Nampower GetCurrentCastingInfo)
 function CleveRoids.ValidateMidShot()
-    return Quiver and Quiver.PredMidShot and Quiver.PredMidShot() and true or false
+    return CleveRoids.IsAutoShotAiming()
 end
 
 -- Validate if current swing timer is within the Slam window (no clip)
@@ -9020,7 +9056,7 @@ CleveRoids.Keywords = {
     -- [norangedclip] - True if casting the action spell NOW will NOT clip ranged auto-shot
     -- Usage: /cast [norangedclip] Aimed Shot
     --        /cast [norangedclip] Fireball
-    --        /cast [norangedclip] Arcane Shot  -- instants: blocked during Quiver windup
+    --        /cast [norangedclip] Arcane Shot  -- hunters: blocked during Auto Shot windup
     norangedclip = function(conditionals)
         return CleveRoids.ValidateNoRangedClip(conditionals)
     end,
@@ -9031,7 +9067,7 @@ CleveRoids.Keywords = {
         return not CleveRoids.ValidateNoRangedClip(conditionals)
     end,
 
-    -- [midshot] / [nomidshot] — Quiver PredMidShot (auto-shot windup). Requires Quiver.
+    -- [midshot] / [nomidshot] — Auto Shot aim windup (GetCurrentCastingInfo).
     midshot = function()
         return CleveRoids.ValidateMidShot()
     end,
@@ -10132,8 +10168,8 @@ CleveRoids.STATIC_CONDITIONALS = {
     npcnear = true,  -- world NPC name scan; independent of current @unit
     creaturenear = true,  -- ClassicAPI ClosestUnitPosition by entry
     mydummy = true, nomydummy = true,  -- PartyFollow dummy token (IsMyDummy)
-    midshot = true, nomidshot = true,  -- Quiver PredMidShot (hunter auto-shot windup)
-    norangedclip = true, rangedclip = true,  -- SP_SwingTimer + Quiver weave gate
+    midshot = true, nomidshot = true,  -- Auto Shot windup via GetCurrentCastingInfo
+    norangedclip = true, rangedclip = true,  -- hunter windup gate / SP_SwingTimer fallback
 }
 
 --- Calculate score for a unit based on priority type
