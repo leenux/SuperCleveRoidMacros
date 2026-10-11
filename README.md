@@ -14,17 +14,17 @@ Party-focused unit tokens and count conditionals (this ClassicAPI build):
 | Lowest party raw HP | `[@partylrawhp]` | Living party member (incl. player) with lowest remaining HP |
 | Party HP count | `[partyhp:<30>2]` | True when more than 2 party members are below 30% HP |
 | Party power count | `[partypower:<30>1]` | True when more than 1 party member is below 30% power |
-| Party leader | `[@leader]` | â†?`partyN` via `GetPartyLeaderIndex()` |
-| Leader's target | `[@leadertarget]` | â†?`partyNtarget` |
+| Party leader | `[@leader]` | â†’ `partyN` via `GetPartyLeaderIndex()` |
+| Leader's target | `[@leadertarget]` | â†’ `partyNtarget` |
 | Your pet's target | `[@pettarget]` | Native unit token (passthrough) |
-| Leader's pet | `[@leaderpet]` | â†?`partypetN` |
-| Leader's pet's target | `[@leaderpettarget]` | â†?`partypetNtarget` |
-| Assist sync | `/assist [@leader]` / `/ast` | Lock a unit's target (default party leader). Miss â†?clear + stopcast + pet follow |
+| Leader's pet | `[@leaderpet]` | â†’ `partypetN` |
+| Leader's pet's target | `[@leaderpettarget]` | â†’ `partypetNtarget` |
+| Assist sync | `/assist [@leader]` / `/ast` | Lock a unit's target (default party leader). Miss â†’ clear + stopcast + pet follow |
 | Pet sync | `/petsync` | Attack when leader pet has target or is in combat; else recall |
 
 `partyhp` / `partypower` use filter op+amount immediately followed by count op+amount (e.g. `<30>2`). Shorthand `[partyhp:30>2]` implies filter `<`.
 
-Replaces older names that are no longer used: `lhp` â†?`partylhp`, `rawlhp` â†?`partylrawhp`, `condcnt` â†?`partyhp` / `partypower`.
+Replaces older names that are no longer used: `lhp` â†’ `partylhp`, `rawlhp` â†’ `partylrawhp`, `condcnt` â†’ `partyhp` / `partypower`.
 
 ### HunterSpam bridge (`/hsshot`, `/hsfill`)
 
@@ -39,7 +39,7 @@ SCRM only provides a thin execute-time bridge so those two lines work under **`/
 /nofirstaction
 ```
 
-**Why:** nested macros that rely on `ChatEdit_SendText` â†?slash are unreliable under `/firstaction` (calls / stop flags can be lost). `ExecuteMacroBody` therefore detects `/hsshot` and `/hsfill` and calls `HunterSpam.DoShot` / `DoFill` directly. Success still sets `stopMacroFlag` when `stopOnCastFlag` is on â€?that is the point: reuse SCRMâ€™s one-action-per-keypress priority, keep shot selection in HunterSpam.
+**Why:** nested macros that rely on `ChatEdit_SendText` â†’ slash are unreliable under `/firstaction` (calls / stop flags can be lost). `ExecuteMacroBody` therefore detects `/hsshot` and `/hsfill` and calls `HunterSpam.DoShot` / `DoFill` directly. Success still sets `stopMacroFlag` when `stopOnCastFlag` is on â€” that is the point: reuse SCRMâ€™s one-action-per-keypress priority, keep shot selection in HunterSpam.
 
 See [HunterSpam/README.md](../HunterSpam/README.md).
 
@@ -47,9 +47,9 @@ See [HunterSpam/README.md](../HunterSpam/README.md).
 
 | Mod | Required | Purpose |
 |-----|:--------:|---------|
-| [Nampower](https://github.com/brues-code/nampower/releases) (v3.0.0+) | âœ?| Spell queueing, DBC data, auto-attack events |
-| [UnitXP_SP3](https://codeberg.org/konaka/UnitXP_SP3/releases) | âœ?| Distance checks, `[multiscan]` enemy scanning |
-| [ClassicAPI](https://github.com/brues-code/ClassicAPI/releases) (v1.15.8+) | âœ?| Modern `C_*` API: dispel-type conditionals (`[magic]`, `[curse]`, â€?, `[moving]` speed, unit-filtered events |
+| [Nampower](https://github.com/brues-code/nampower/releases) (v3.0.0+) | âœ… | Spell queueing, DBC data, auto-attack events |
+| [UnitXP_SP3](https://codeberg.org/konaka/UnitXP_SP3/releases) | âœ… | Distance checks, `[multiscan]` enemy scanning |
+| [ClassicAPI](https://github.com/brues-code/ClassicAPI/releases) (v1.15.8+) | âœ… | Modern `C_*` API: dispel-type conditionals (`[magic]`, `[curse]`, â€¦), `[moving]` speed, unit-filtered events |
 
 ## Installation
 
@@ -84,15 +84,15 @@ See [HunterSpam/README.md](../HunterSpam/README.md).
 
 See the **[Wiki](https://github.com/leenux/SuperCleveRoidMacros/wiki)** for complete documentation:
 
-- **[Quick Start](https://github.com/leenux/SuperCleveRoidMacros/wiki/Quick-Start)** â€?Syntax, multi-value logic, comparisons, special prefixes
-- **[Slash Commands](https://github.com/leenux/SuperCleveRoidMacros/wiki/Slash-Commands)** â€?All 35+ commands, priority macros, UnitXP scanning
-- **[Conditionals](https://github.com/leenux/SuperCleveRoidMacros/wiki/Conditionals)** â€?150+ conditionals (player & target), short aliases, extended unit tokens, multiscan
-- **[Reference Tables](https://github.com/leenux/SuperCleveRoidMacros/wiki/Reference-Tables)** â€?CC types, damage schools, stat types, swing types
-- **[Features](https://github.com/leenux/SuperCleveRoidMacros/wiki/Features)** â€?Debuff timers, combo tracking, talent modifiers, TWoW mechanics
-- **[Overflow Buff Frame](https://github.com/leenux/SuperCleveRoidMacros/wiki/Overflow-Buff-Frame)** â€?Hidden buff display for 32+ buffs
-- **[Immunity Tracking](https://github.com/leenux/SuperCleveRoidMacros/wiki/Immunity-Tracking)** â€?Auto-learned NPC immunities
-- **[Settings](https://github.com/leenux/SuperCleveRoidMacros/wiki/Settings)** â€?Configuration and console commands
-- **[Supported Addons](https://github.com/leenux/SuperCleveRoidMacros/wiki/Supported-Addons)** â€?Compatible addons and integrations
+- **[Quick Start](https://github.com/leenux/SuperCleveRoidMacros/wiki/Quick-Start)** â€” Syntax, multi-value logic, comparisons, special prefixes
+- **[Slash Commands](https://github.com/leenux/SuperCleveRoidMacros/wiki/Slash-Commands)** â€” All 35+ commands, priority macros, UnitXP scanning
+- **[Conditionals](https://github.com/leenux/SuperCleveRoidMacros/wiki/Conditionals)** â€” 150+ conditionals (player & target), short aliases, extended unit tokens, multiscan
+- **[Reference Tables](https://github.com/leenux/SuperCleveRoidMacros/wiki/Reference-Tables)** â€” CC types, damage schools, stat types, swing types
+- **[Features](https://github.com/leenux/SuperCleveRoidMacros/wiki/Features)** â€” Debuff timers, combo tracking, talent modifiers, TWoW mechanics
+- **[Overflow Buff Frame](https://github.com/leenux/SuperCleveRoidMacros/wiki/Overflow-Buff-Frame)** â€” Hidden buff display for 32+ buffs
+- **[Immunity Tracking](https://github.com/leenux/SuperCleveRoidMacros/wiki/Immunity-Tracking)** â€” Auto-learned NPC immunities
+- **[Settings](https://github.com/leenux/SuperCleveRoidMacros/wiki/Settings)** â€” Configuration and console commands
+- **[Supported Addons](https://github.com/leenux/SuperCleveRoidMacros/wiki/Supported-Addons)** â€” Compatible addons and integrations
 
 ## Known Issues
 
