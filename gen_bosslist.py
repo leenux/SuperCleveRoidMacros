@@ -223,7 +223,7 @@ def fetch_db_names(boss_ids: list[int], name_only_en: list[str]):
     en_to_row: dict[str, tuple[int, str | None]] = {}
     conn = pymysql.connect(
         host="127.0.0.1",
-        port=13306,
+        port=3306,
         user="mangos",
         password="mangos",
         database="tw_world",

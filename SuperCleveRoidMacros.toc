@@ -11,6 +11,7 @@ Init.lua
 NampowerAPI.lua
 ClassicAPI.lua
 BossList.lua
+NpcTraits.lua
 Utility.lua
 Core.lua
 Conditionals.lua

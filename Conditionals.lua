@@ -7583,6 +7583,118 @@ CleveRoids.Keywords = {
         return not CleveRoids.IsBossUnit(target)
     end,
 
+    -- [danger:fear|disarm] — NPC casts fear/horror or disarm (DB spell lists / AI)
+    -- [danger:fear:focus] — check a specific unit without changing cast @unit
+    -- Kind is required; bare [danger] is false.
+    danger = function(conditionals)
+        if not CleveRoids.UnitHasNpcDanger then return false end
+        if conditionals.danger and type(conditionals.danger) == "table" then
+            return Or(conditionals.danger, function(args)
+                local kind, unit
+                if type(args) == "table" then
+                    kind = args.name or args[1]
+                    unit = args.unit or args[2]
+                else
+                    kind = args
+                end
+                if not kind or kind == "" then return false end
+                -- Allow [danger:fear:focus] via slash-separated multi args if parsed as "fear:focus"
+                if type(kind) == "string" and string.find(kind, ":") then
+                    local _, _, k, u = string.find(kind, "^([^:]+):(.+)$")
+                    if k and u then
+                        kind, unit = k, u
+                    end
+                end
+                unit = ResolveFocusUnit(unit or conditionals.target or "target")
+                if not unit or not UnitExists(unit) then return false end
+                return CleveRoids.UnitHasNpcDanger(unit, string.lower(kind)) and true or false
+            end)
+        end
+        return false
+    end,
+
+    -- [nodanger:fear|disarm]
+    nodanger = function(conditionals)
+        if not CleveRoids.UnitHasNpcDanger then return true end
+        if conditionals.nodanger and type(conditionals.nodanger) == "table" then
+            return NegatedMulti(conditionals.nodanger, function(args)
+                local kind, unit
+                if type(args) == "table" then
+                    kind = args.name or args[1]
+                    unit = args.unit or args[2]
+                else
+                    kind = args
+                end
+                if not kind or kind == "" then return true end
+                if type(kind) == "string" and string.find(kind, ":") then
+                    local _, _, k, u = string.find(kind, "^([^:]+):(.+)$")
+                    if k and u then
+                        kind, unit = k, u
+                    end
+                end
+                unit = ResolveFocusUnit(unit or conditionals.target or "target")
+                if not unit or not UnitExists(unit) then return true end
+                return not CleveRoids.UnitHasNpcDanger(unit, string.lower(kind))
+            end, conditionals, "nodanger")
+        end
+        return true
+    end,
+
+    -- [npcimmune:disarm|fear|bleed|poison|taunt] — DB mechanic/type immunities
+    -- Distinct from learned [immune:…]. Kind required.
+    npcimmune = function(conditionals)
+        if not CleveRoids.UnitHasNpcImmune then return false end
+        if conditionals.npcimmune and type(conditionals.npcimmune) == "table" then
+            return Or(conditionals.npcimmune, function(args)
+                local kind, unit
+                if type(args) == "table" then
+                    kind = args.name or args[1]
+                    unit = args.unit or args[2]
+                else
+                    kind = args
+                end
+                if not kind or kind == "" then return false end
+                if type(kind) == "string" and string.find(kind, ":") then
+                    local _, _, k, u = string.find(kind, "^([^:]+):(.+)$")
+                    if k and u then
+                        kind, unit = k, u
+                    end
+                end
+                unit = ResolveFocusUnit(unit or conditionals.target or "target")
+                if not unit or not UnitExists(unit) then return false end
+                return CleveRoids.UnitHasNpcImmune(unit, string.lower(kind)) and true or false
+            end)
+        end
+        return false
+    end,
+
+    -- [nonpcimmune:bleed|taunt|…]
+    nonpcimmune = function(conditionals)
+        if not CleveRoids.UnitHasNpcImmune then return true end
+        if conditionals.nonpcimmune and type(conditionals.nonpcimmune) == "table" then
+            return NegatedMulti(conditionals.nonpcimmune, function(args)
+                local kind, unit
+                if type(args) == "table" then
+                    kind = args.name or args[1]
+                    unit = args.unit or args[2]
+                else
+                    kind = args
+                end
+                if not kind or kind == "" then return true end
+                if type(kind) == "string" and string.find(kind, ":") then
+                    local _, _, k, u = string.find(kind, "^([^:]+):(.+)$")
+                    if k and u then
+                        kind, unit = k, u
+                    end
+                end
+                unit = ResolveFocusUnit(unit or conditionals.target or "target")
+                if not unit or not UnitExists(unit) then return true end
+                return not CleveRoids.UnitHasNpcImmune(unit, string.lower(kind))
+            end, conditionals, "nonpcimmune")
+        end
+        return true
+    end,
+
     -- [inrange] or [inrange:Spell] - Target is in range of spell
     -- [inrange:Spell>N] - More than N enemies are in range of spell (count mode)
     inrange = function(conditionals)
