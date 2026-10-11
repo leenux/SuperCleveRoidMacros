@@ -17,17 +17,18 @@ do
     cast=true, castsequence=true, use=true,
     startattack=true, stopattack=true, stopcasting=true, stopmacro=true,
     skipmacro=true, firstaction=true, nofirstaction=true,
-    target=true, retarget=true, cancelaura=true, unbuff=true,
-    unqueue=true, unshift=true, equip=true, equipmh=true, equipoh=true,
+    target=true, retarget=true, assist=true, ast=true, petsync=true, cancelaura=true, unbuff=true,
+    unqueue=true, unshift=true, equip=true, equipmh=true, equipoh=true, eqomh=true, eqooh=true,
     petattack=true, petfollow=true, petpassive=true,
     petaggressive=true, petdefensive=true, petwait=true,
+    petfeed=true, feedpet=true,
     quickheal=true, qh=true,
     castpet=true, cleartarget=true,
     applymain=true, applyoff=true,
     ["equip11"]=true, ["equip12"]=true, ["equip13"]=true, ["equip14"]=true,
   }
 
-  local ALIASES = { unbuff = "cancelaura" }
+  local ALIASES = { unbuff = "cancelaura", a = "assist" }
 
   local function has_handler(cmd)
     local list = _G.SlashCmdList

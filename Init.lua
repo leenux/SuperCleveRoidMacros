@@ -19,13 +19,40 @@ CleveRoids.mouseOverResolvers  = {}
 CleveRoids.mouseoverUnit = CleveRoids.mouseoverUnit or nil
 CleveRoids.mouseOverUnit = nil
 
+-- Every macro slot the client can hold: 18 account-wide (1-18) followed by 18
+-- character-specific (19-36). This is the index space GetMacroInfo and
+-- C_Macro.SetMacroDisplay address, and it is fixed -- GetNumMacros() returns how
+-- many of each tab are *used*, which cannot be summed into a range, because the
+-- character block starts at 19 no matter how few account macros exist. Blizzard's
+-- own MAX_MACROS is no help either: it lives in the load-on-demand Blizzard_MacroUI
+-- and is nil until the player opens the macro window.
+CleveRoids.MAX_MACRO_SLOTS = 36
+
 -- Environment flags
 CleveRoids.hasSuperwow = SetAutoloot and true or false
 CleveRoids.hasTurtle   = (type(_G.TURTLE_WOW_VERSION) ~= "nil")
-CleveRoids.hasReliquary = (RQ_GetVersion ~= nil)
 CleveRoids.supported   = CleveRoids.hasTurtle
 
+-- ClassicAPI macro display (C_Macro.SetMacroDisplay): hand ClassicAPI the resolved
+-- action per macro instead of replacing the action-bar globals in Lua, so the icon,
+-- tooltip, cooldown sweep, range and usable state all come from the client -- including
+-- the drag cursor and the macro window grid, which Lua cannot reach.
+--
+-- ClassicAPI stands down from macro display entirely when it sees this addon loaded;
+-- ClassicAPIMacroDisplay is what tells it we drive it instead, and ReleaseDisplays
+-- clears it to hand every macro back. A fork that leaves the flag unset keeps the old
+-- behavior -- both must never drive the same buttons. It doubles as the internal
+-- "may we call C_Macro.SetMacroDisplay" guard, so the two can never disagree.
+--
+-- Feature-detect rather than version-check: SetMacroDisplay ships in ClassicAPI
+-- v1.15.0, below this addon's minimum, so a nil here means the client mod is
+-- missing outright -- the case Core.lua's requirement check warns about but
+-- keeps running.
+CleveRoids.ClassicAPIMacroDisplay =
+    (type(C_Macro) == "table" and C_Macro.SetMacroDisplay ~= nil) and true or false
+
 CleveRoids.ParsedMsg = {}
+CleveRoids.ExpandedGroups = {}
 CleveRoids.Items     = {}
 CleveRoids.Spells    = {}
 CleveRoids.PetSpells = {}
@@ -44,12 +71,10 @@ CleveRoids.unknownTexture = "Interface\\Icons\\INV_Misc_QuestionMark"
 
 CleveRoids.spell_tracking = {}
 
--- GUID-based cast tracking (populated by pfUI 7.6 or standalone SPELL_START events)
--- Format: [casterGuid] = {spellID, spellName, icon, startTime, duration, endTime}
+-- GUID-based cast tracking, populated from our own SPELL_START handlers and pruned
+-- in OnUpdate. Format: [casterGuid] = {spellID, spellName, icon, startTime, duration,
+-- endTime}
 CleveRoids.castTracking = {}
-
--- pfUI 7.6+ with Nampower 2.31.0+ detected (GUID-based cast tracking available)
-CleveRoids.hasPfUI76 = false
 
 -- Combo point tracking (initialized early for /cast hook)
 CleveRoids.lastComboPoints = 0
@@ -125,9 +150,13 @@ CleveRoids.dynamicCmds = {
     ["/castpet"]      = true,
     ["/castsequence"] = true,
     ["/use"]          = true,
+    ["/petfeed"]      = true,
+    ["/feedpet"]      = true,
     ["/equip"]        = true,
     ["/equipmh"]      = true,
     ["/equipoh"]      = true,
+    ["/eqomh"]        = true,
+    ["/eqooh"]        = true,
     ["/equip11"]      = true,
     ["/equip12"]      = true,
     ["/equip13"]      = true,
@@ -172,6 +201,9 @@ end
 -- Spell queue state (Nampower)
 CleveRoids.queuedSpell = nil
 CleveRoids.lastCastSpell = nil
+-- Per-spell successful cast timestamps for [lastcast:Spell>N] / [lastcast:>N]
+-- Keys: lowercase normalized spell name, and "spell:<id>"
+CleveRoids.lastCastTimes = {}
 
 -- Macro execution control
 CleveRoids.stopMacroFlag = false
@@ -187,8 +219,18 @@ CleveRoids.ignoreKeywords = {
     _operators    = true,  -- Metadata for AND/OR operator tracking
     _groups       = true,  -- Grouped conditional values for AND/OR evaluation
     multiscan     = true,  -- Processed before Keywords loop (target resolution)
-    mouseuse      = true,  -- Post-cast modifier: auto-click AOE targeting circle at cursor
+    cursor        = true,  -- Modifier: place ground-target spell/item at cursor (CastAtCursor)
     stopattack    = true,  -- Post-cast modifier: stop autoattack after cast (CheapShot pattern)
+    hasAtTarget   = true,  -- Explicit @unit from parse (ClassicAPI [@player]/[@cursor] bridge)
+}
+
+-- Deprecated conditional names, rewritten to their current keyword in ParseMsg
+-- before anything downstream (evaluation, _groups) sees them. This is the path
+-- for renamed *modifiers* -- ignoreKeywords entries, which have no Keywords
+-- predicate that an alias could just point at the way [stl] does for [stealth].
+-- MacroErrorChecker also reads this table, so the old names stay valid syntax.
+CleveRoids.conditionalAliases = {
+    mouseuse = "cursor",  -- pre-ClassicAPI name, back when it clicked the AoE reticle
 }
 
 -- TODO: Localize?
@@ -215,11 +257,6 @@ CleveRoids.reactiveSpells = {
     ["Aquatic Form"]    = true,
 }
 
-CleveRoids.spamConditions = {
-    [CleveRoids.Localized.Attack]   = "checkchanneled",
-    [CleveRoids.Localized.AutoShot] = "checkchanneled",
-    [CleveRoids.Localized.Shoot]    = "checkchanneled",
-}
 
 -- PERFORMANCE: Static lookup for toggled buff abilities (built once, used per-frame)
 CleveRoids._toggledBuffAbilities = {
@@ -246,28 +283,32 @@ CleveRoids.auraTextures = {
 
 
 -- I need to make a 2h modifier
--- Maps easy to use weapon type names (e.g. Axes, Shields) to their inventory slot name and their localized tooltip name
+-- Maps easy-to-use weapon type names (e.g. Axes, Shields) to their inventory
+-- slot plus the locale-independent item class/subclass IDs that identify them
+-- (read via C_Item.GetItemInfoInstant). class 2 = Weapon, 4 = Armor (shields).
+-- subClass is a set because the logical "Axes"/"Swords"/"Maces" types span both
+-- the one-handed and two-handed weapon subclasses.
 CleveRoids.WeaponTypeNames = {
-    Daggers   = { slot = "MainHandSlot", name = CleveRoids.Localized.Dagger },
-    Fists     = { slot = "MainHandSlot", name = CleveRoids.Localized.FistWeapon },
-    Axes      = { slot = "MainHandSlot", name = CleveRoids.Localized.Axe },
-    Swords    = { slot = "MainHandSlot", name = CleveRoids.Localized.Sword },
-    Staves    = { slot = "MainHandSlot", name = CleveRoids.Localized.Staff },
-    Maces     = { slot = "MainHandSlot", name = CleveRoids.Localized.Mace },
-    Polearms  = { slot = "MainHandSlot", name = CleveRoids.Localized.Polearm },
+    Daggers   = { slot = "MainHandSlot",      class = 2, subClass = { [15] = true } },
+    Fists     = { slot = "MainHandSlot",      class = 2, subClass = { [13] = true } },
+    Axes      = { slot = "MainHandSlot",      class = 2, subClass = { [0] = true, [1] = true } },
+    Swords    = { slot = "MainHandSlot",      class = 2, subClass = { [7] = true, [8] = true } },
+    Staves    = { slot = "MainHandSlot",      class = 2, subClass = { [10] = true } },
+    Maces     = { slot = "MainHandSlot",      class = 2, subClass = { [4] = true, [5] = true } },
+    Polearms  = { slot = "MainHandSlot",      class = 2, subClass = { [6] = true } },
     -- OH
-    Daggers2  = { slot = "SecondaryHandSlot", name = CleveRoids.Localized.Dagger },
-    Fists2    = { slot = "SecondaryHandSlot", name = CleveRoids.Localized.FistWeapon },
-    Axes2     = { slot = "SecondaryHandSlot", name = CleveRoids.Localized.Axe },
-    Swords2   = { slot = "SecondaryHandSlot", name = CleveRoids.Localized.Sword },
-    Maces2    = { slot = "SecondaryHandSlot", name = CleveRoids.Localized.Mace },
-    Shields   = { slot = "SecondaryHandSlot", name = CleveRoids.Localized.Shield },
+    Daggers2  = { slot = "SecondaryHandSlot", class = 2, subClass = { [15] = true } },
+    Fists2    = { slot = "SecondaryHandSlot", class = 2, subClass = { [13] = true } },
+    Axes2     = { slot = "SecondaryHandSlot", class = 2, subClass = { [0] = true, [1] = true } },
+    Swords2   = { slot = "SecondaryHandSlot", class = 2, subClass = { [7] = true, [8] = true } },
+    Maces2    = { slot = "SecondaryHandSlot", class = 2, subClass = { [4] = true, [5] = true } },
+    Shields   = { slot = "SecondaryHandSlot", class = 4, subClass = { [6] = true } },
     -- ranged
-    Guns      = { slot = "RangedSlot", name = CleveRoids.Localized.Gun },
-    Crossbows = { slot = "RangedSlot", name = CleveRoids.Localized.Crossbow },
-    Bows      = { slot = "RangedSlot", name = CleveRoids.Localized.Bow },
-    Thrown    = { slot = "RangedSlot", name = CleveRoids.Localized.Thrown },
-    Wands     = { slot = "RangedSlot", name = CleveRoids.Localized.Wand },
+    Guns      = { slot = "RangedSlot",        class = 2, subClass = { [3] = true } },
+    Crossbows = { slot = "RangedSlot",        class = 2, subClass = { [18] = true } },
+    Bows      = { slot = "RangedSlot",        class = 2, subClass = { [2] = true } },
+    Thrown    = { slot = "RangedSlot",        class = 2, subClass = { [16] = true } },
+    Wands     = { slot = "RangedSlot",        class = 2, subClass = { [19] = true } },
 }
 
 -- Detect available features
@@ -291,14 +332,6 @@ local function PrintFeatures()
         end
     end
     if CleveRoids.hasUnitXP then table.insert(features, "UnitXP") end
-    if CleveRoids.hasReliquary then
-        local ok, major, minor, patch = pcall(RQ_GetVersion)
-        if ok and major then
-            table.insert(features, string.format("Reliquary v%d.%d.%d", major, minor, patch))
-        else
-            table.insert(features, "Reliquary")
-        end
-    end
     if CleveRoids.hasTurtle then table.insert(features, "Turtle") end
 
     if table.getn(features) > 0 then

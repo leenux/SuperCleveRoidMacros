@@ -42,14 +42,15 @@ CleveRoids.spellIdCache = {}
 -- PERFORMANCE: Spell name construction cache
 CleveRoids.spellNameCache = {}
 
+CleveRoids.playerGuid = UnitGUID('player')
+CleveRoids.playerClass = UnitClassBase("player")
+
 -- PERFORMANCE: Upvalues for frequently called global functions (avoid global lookups)
 local GetTime = GetTime
 local UnitExists = UnitExists
 local UnitAffectingCombat = UnitAffectingCombat
-local GetContainerItemLink = GetContainerItemLink
 local GetContainerItemInfo = GetContainerItemInfo
 local GetContainerNumSlots = GetContainerNumSlots
-local GetInventoryItemLink = GetInventoryItemLink
 local GetItemInfo = GetItemInfo
 local PickupContainerItem = PickupContainerItem
 local PickupInventoryItem = PickupInventoryItem
@@ -63,9 +64,9 @@ local ipairs = ipairs
 local type = type
 local tonumber = tonumber
 local tostring = tostring
-local string_find = string.find
 local string_lower = string.lower
 local string_gsub = string.gsub
+local string_find = string.find
 local table_insert = table.insert
 local table_getn = table.getn
 
@@ -124,15 +125,24 @@ local BOOLEAN_CONDITIONALS = {
     nocombat = true,
     stealth = true,
     nostealth = true,
+    mounted = true,
+    nomounted = true,
+    standing = true,
+    sitting = true,
     channeled = true,
     nochanneled = true,
     checkchanneled = true,
     checkcasting = true,
     dead = true,
+    nodead = true,
     alive = true,
+    noalive = true,
     help = true,
+    nohelp = true,
     harm = true,
+    noharm = true,
     exists = true,
+    noexists = true,
     party = true,
     raid = true,
     resting = true,
@@ -143,15 +153,51 @@ local BOOLEAN_CONDITIONALS = {
     nomhimbue = true,
     ohimbue = true,
     noohimbue = true,
+    mhenchant = true,
+    nomhenchant = true,
+    ohenchant = true,
+    noohenchant = true,
+    locked = true,
+    nolocked = true,
+    indoors = true,
+    noindoors = true,
+    outdoors = true,
+    nooutdoors = true,
+    instance = true,
+    noinstance = true,
     group = true,
     nogroup = true,
     moving = true,
     nomoving = true,
+    -- Short aliases for moving / nomoving (must be boolean or bare [nomv] stores the spell name)
+    mv = true,
+    nomv = true,
     stopattack = true,
     pet = true,
     nopet = true,
+    pethappiness = true,
+    nopethappiness = true,
+    focus = true,
+    nofocus = true,
     bg = true,
     nobg = true,
+    boss = true,
+    noboss = true,
+    -- Dispel-type conditionals (ClassicAPI C_UnitAuras)
+    magic = true,
+    nomagic = true,
+    curse = true,
+    nocurse = true,
+    disease = true,
+    nodisease = true,
+    poison = true,
+    nopoison = true,
+    dispellable = true,
+    nodispellable = true,
+    magicbuff = true,
+    nomagicbuff = true,
+    dispellablebuff = true,
+    nodispellablebuff = true,
 }
 
 local requirementCheckFrame = CreateFrame("Frame")
@@ -164,22 +210,41 @@ requirementCheckFrame:SetScript("OnEvent", function()
     local hasUnitXP = pcall(UnitXP, "nop", "nop")
     local hasNampower30 = hasNampower and CleveRoids.NampowerAPI
         and CleveRoids.NampowerAPI.HasMinimumVersion(3, 0, 0)
+    local hasClassicAPI = CleveRoids.ClassicAPI and CleveRoids.ClassicAPI.IsAvailable()
+    -- v1.15.0 added frame:RegisterUnitEvent, which Utility.lua calls at file scope.
+    -- On an older build that call raises, aborting the rest of the chunk -- so this
+    -- is not a degraded-features warning, it's "the addon did not finish loading".
+    -- v1.15.8 scoped GetMouseButtonClicked to the click dispatch. Below it the
+    -- function exists but a held button keeps its value, so [button:N] reads the
+    -- button you are turning the camera with -- wrong quietly, which is the worse
+    -- failure and why the floor moved rather than the conditional being gated.
+    local hasClassicAPI1158 = hasClassicAPI and CleveRoids.ClassicAPI.HasMinimumVersion(1, 15, 8)
 
-    if not hasNampower30 or not hasUnitXP then
+    if not hasNampower30 or not hasUnitXP or not hasClassicAPI or not hasClassicAPI1158 then
         -- Show warnings (don't disable — tearing down a partially-initialized addon causes hangs)
         if not hasNampower then
             CleveRoids.Print("|cFFFF9900WARNING:|r |cFF00FFFFAvitasia's Nampower v3.0.0+|r is required:")
-            CleveRoids.Print("https://gitea.com/avitasia/nampower")
+            CleveRoids.Print("https://github.com/brues-code/nampower")
             CleveRoids.Print("Many features will be unavailable without Nampower.")
         elseif not hasNampower30 then
             local major, minor, patch = CleveRoids.NampowerAPI.GetVersion()
             CleveRoids.Print(format("|cFFFF9900WARNING:|r |cFF00FFFFNampower v3.0.0+|r is required (you have v%d.%d.%d):", major, minor, patch))
-            CleveRoids.Print("https://gitea.com/avitasia/nampower")
+            CleveRoids.Print("https://github.com/brues-code/nampower")
             CleveRoids.Print("Some features may be unavailable with this version.")
         end
         if not hasUnitXP then
             CleveRoids.Print("|cFFFF9900WARNING:|r |cFF00FFFFKonaka's UnitXP_SP3|r is required:")
             CleveRoids.Print("https://codeberg.org/konaka/UnitXP_SP3")
+        end
+        if not hasClassicAPI then
+            CleveRoids.Print("|cFFFF9900WARNING:|r |cFF00FFFFClassicAPI|r is required:")
+            CleveRoids.Print("https://github.com/brues-code/ClassicAPI")
+            CleveRoids.Print("Dispel-type and movement conditionals will be unavailable without it.")
+        elseif not hasClassicAPI1158 then
+            local major, minor, patch = CleveRoids.ClassicAPI.GetVersion()
+            CleveRoids.Print(format("|cFFFF9900WARNING:|r |cFF00FFFFClassicAPI v1.15.8+|r is required (you have v%d.%d.%d):", major, minor, patch))
+            CleveRoids.Print("https://github.com/brues-code/ClassicAPI")
+            CleveRoids.Print("The addon cannot finish loading on this version -- update ClassicAPI.")
         end
     end
 
@@ -216,11 +281,11 @@ local function GetInventoryIdFromSlot(slotName)
     return SLOT_TO_INVID[slotName] or GetInventorySlotInfo(slotName)
 end
 
--- Check if slot 18 is a relic (no GCD) for current player class
+-- Check if slot 18 is a relic (no GCD). Backed by CleveRoids.hasRelicSlot, cached
+-- at PLAYER_LOGIN -- see the note there on why it can't be sampled on demand.
 local function IsRelicSlot(slot)
     if slot ~= 18 then return false end
-    local playerClass = CleveRoids.playerClass
-    return playerClass == "PALADIN" or playerClass == "DRUID" or playerClass == "SHAMAN"
+    return CleveRoids.hasRelicSlot or false
 end
 
 -- PERFORMANCE: Cache GetTime() result for cooldown checks within same frame
@@ -244,16 +309,11 @@ local function PerformEquipSwap(item, inventoryId, useQueueScript)
     if not item or not inventoryId then return false end
 
     -- Check if in combat and swapping weapons
-    -- Slot 18 (ranged) is only a weapon for Hunter/Warrior/Rogue/Mage/Warlock/Priest
-    -- For Druid/Paladin/Shaman, slot 18 is idol/libram/totem - can swap freely
+    -- Slot 18 is a ranged weapon for exactly the classes with no relic slot; for
+    -- Paladin/Druid/Shaman it's an idol/libram/totem that can swap freely.
     local isWeapon = (inventoryId == 16 or inventoryId == 17)
     if inventoryId == 18 then
-        -- Use cached playerClass for performance
-        local playerClass = CleveRoids.playerClass
-        -- Only treat slot 18 as weapon for classes that use ranged weapons
-        isWeapon = (playerClass == "HUNTER" or playerClass == "WARRIOR" or
-                    playerClass == "ROGUE" or playerClass == "MAGE" or
-                    playerClass == "WARLOCK" or playerClass == "PRIEST")
+        isWeapon = not IsRelicSlot(inventoryId)
     end
 
     if isWeapon and UnitAffectingCombat("player") then
@@ -491,6 +551,12 @@ function CleveRoids.DisableAddon(reason)
     -- Mark state
     CleveRoids.disabled = true
 
+    -- Hand macro display back to ClassicAPI's own #showtooltip parser before we go
+    -- quiet, or every claimed macro would keep the last value we published.
+    if CleveRoids.ReleaseDisplays then
+        CleveRoids.ReleaseDisplays()
+    end
+
     -- Stop main frame activity
     if CleveRoids.Frame then
         if CleveRoids.Frame.UnregisterAllEvents then
@@ -512,6 +578,7 @@ function CleveRoids.DisableAddon(reason)
         SlashCmdList.CLEVEROID = disabledMsg
         SlashCmdList.CAST = disabledMsg
         SlashCmdList.USE = disabledMsg
+        SlashCmdList.FEEDPET = disabledMsg
         SlashCmdList.EQUIP = disabledMsg
         SlashCmdList.EQUIPMH = disabledMsg
         SlashCmdList.EQUIPOH = disabledMsg
@@ -544,6 +611,10 @@ frame:SetScript("OnEvent", function()
     if type(CleveRoidMacros.macrocheck) ~= "number" then
         CleveRoidMacros.macrocheck = 1  -- enabled by default
     end
+
+    -- The saved realtime setting is only readable now; the unit streams were
+    -- registered at load assuming event-driven mode.
+    CleveRoids.ApplyUnitStreamEvents()
 end)
 
 -- Queues a full update of all action bars.
@@ -554,118 +625,34 @@ function CleveRoids.QueueActionUpdate()
     end
 end
 
-local function _StripColor(s)
-  if not s then return s end
-  if string.sub(s,1,2) == "|c" then return string.sub(s,11,-3) end
-  return s
-end
+-- Count of `itemId` in *bags only* (not bank), matched by itemID throughout --
+-- locale-independent, no hardcoded item names.
+-- PERFORMANCE: uses the CleveRoids.Items cache (itemId -> name -> data) for an
+-- O(1) lookup when available, falling back to a bag scan on a cache miss.
+function CleveRoids.GetReagentCount(itemId)
+  if not itemId then return 0 end
 
-local _ReagentBySpell = {
-  ["Vanish"] = "Flash Powder",    -- 5140
-  ["Blind"]  = "Blinding Powder", -- 5530
-}
-
--- Expose for use in Generic.lua (IndexSpells fallback)
-CleveRoids.ReagentBySpell = _ReagentBySpell
-
--- Minimal map for rogue reagents; extend as needed
-local _ReagentIdByName = {
-    ["Flash Powder"]   = 5140, -- Vanish
-    ["Blinding Powder"] = 5530, -- Blind
-}
-
--- Lazy bag-scan tooltip (only if we need to scan a bag slot by name)
-local function CRM_GetBagScanTip()
-  local tip = _G.CleveRoidsBagScanTip
-  if tip then return tip end
-  local ok, created = pcall(CreateFrame, "GameTooltip", "CleveRoidsBagScanTip", UIParent, "GameTooltipTemplate")
-  if ok and created then
-    tip = created
-  else
-    tip = CreateFrame("GameTooltip", "CleveRoidsBagScanTip", UIParent)
-    local L1 = tip:CreateFontString("$parentTextLeft1",  nil, "GameTooltipText")
-    local R1 = tip:CreateFontString("$parentTextRight1", nil, "GameTooltipText")
-    tip:AddFontStrings(L1, R1)
-    for i=2,10 do
-      tip:CreateFontString("$parentTextLeft"..i,  nil, "GameTooltipText")
-      tip:CreateFontString("$parentTextRight"..i, nil, "GameTooltipText")
-    end
-  end
-  tip:SetOwner(WorldFrame, "ANCHOR_NONE")
-  _G.CleveRoidsBagScanTip = tip
-  return tip
-end
-
--- Return total in *bags only* (not bank), by id when possible; fallback to name
--- PERFORMANCE: Uses CleveRoids.Items cache for O(1) lookup when available
-function CleveRoids.GetReagentCount(reagentName)
-  if not reagentName or reagentName == "" then return 0 end
-
-  -- Fast path: check cache first
   local Items = CleveRoids.Items
   if Items then
-    local wantId = _ReagentIdByName[reagentName]
-
-    -- Try by ID first if we have a mapping
-    if wantId then
-      local itemName = Items[wantId]
-      if itemName then
-        local itemData = Items[itemName]
-        if itemData and itemData.count and not itemData.inventoryID then
-          -- Item is in bags (not equipped), return cached count
-          return itemData.count
-        end
+    local itemName = Items[itemId]
+    if itemName then
+      local itemData = Items[itemName]
+      if itemData and itemData.count and not itemData.inventoryID then
+        -- Item is in bags (not equipped), return cached count
+        return itemData.count
       end
-    end
-
-    -- Try by name
-    local itemData = Items[reagentName]
-    if type(itemData) == "string" then
-      itemData = Items[itemData]  -- Resolve indirection
-    end
-    if itemData and type(itemData) == "table" and itemData.count and not itemData.inventoryID then
-      return itemData.count
-    end
-
-    -- Try lowercase
-    local lowerName = string.lower(reagentName)
-    local resolved = Items[lowerName]
-    if type(resolved) == "string" then
-      itemData = Items[resolved]
-    elseif type(resolved) == "table" then
-      itemData = resolved
-    end
-    if itemData and type(itemData) == "table" and itemData.count and not itemData.inventoryID then
-      return itemData.count
     end
   end
 
-  -- Slow path fallback: full bag scan (only when cache miss)
-  local wantId = _ReagentIdByName[reagentName]
+  -- Slow path: scan bags by itemID (only on a cache miss)
   local total = 0
-
   for bag = 0, 4 do
     local slots = GetContainerNumSlots(bag) or 0
     for slot = 1, slots do
-      local _, count = GetContainerItemInfo(bag, slot)
-      count = count or 0
-      local link = GetContainerItemLink and GetContainerItemLink(bag, slot)
-      if link then
-        local _, _, idstr = string.find(link, "item:(%d+)")
-        local id = idstr and tonumber(idstr) or nil
-        if (wantId and id == wantId) or (not wantId and string.find(link, "%["..reagentName.."%]")) then
-          total = total + count
-        end
-      else
-        -- Fallback: scan bag slot tooltip for the name (expensive, only when no link)
-        local tip = CRM_GetBagScanTip()
-        tip:ClearLines()
-        tip:SetBagItem(bag, slot)
-        local left1 = _G[tip:GetName().."TextLeft1"]
-        local name = left1 and left1:GetText()
-        if name and name == reagentName then
-          total = total + count
-        end
+      -- Base itemID straight off the slot (no link string, no regex).
+      if C_Container.GetContainerItemID(bag, slot) == itemId then
+        local _, count = GetContainerItemInfo(bag, slot)
+        total = total + (count or 0)
       end
     end
   end
@@ -678,102 +665,55 @@ end
 function CleveRoids.GetLiveItemCount(itemName)
   if not itemName or itemName == "" then return 0 end
   -- Escape Lua pattern special chars in item name to avoid crashes
-  local escaped = string.gsub(itemName, "([%(%)%.%%%+%-%*%?%[%]%^%$])", "%%%1")
-  local pattern = "%[" .. escaped .. "%]"
-  local lowerPattern = string.lower(pattern)
+  local wantLower = string.lower(itemName)
   local total = 0
   for bag = 0, 4 do
     local slots = GetContainerNumSlots(bag) or 0
     for slot = 1, slots do
-      local link = GetContainerItemLink and GetContainerItemLink(bag, slot)
-      if link and string.find(string.lower(link), lowerPattern) then
-        local _, count = GetContainerItemInfo(bag, slot)
-        total = total + (count or 0)
+      local id = C_Container.GetContainerItemID(bag, slot)
+      if id then
+        local name = C_Item.GetItemNameByID(id)
+        if name and string.lower(name) == wantLower then
+          local _, count = GetContainerItemInfo(bag, slot)
+          total = total + (count or 0)
+        end
       end
     end
   end
   return total
 end
 
-function CleveRoids.GetSpellCost(spellSlot, bookType)
-  -- Fast path: existing fixed-slot read
-  CleveRoids.Frame:SetOwner(WorldFrame, "ANCHOR_NONE")
-  CleveRoids.Frame:SetSpell(spellSlot, bookType)
-
-  local cost, reagent
-  local costText = CleveRoids.Frame.costFontString:GetText()
-  if costText then
-      _, _, cost = string.find(costText, "^(%d+)%s+[^yYsS]")
+-- Power cost and (first) reagent for a spellbook slot, read from Spell.dbc via
+-- ClassicAPI -- no GameTooltip scan, no locale-dependent string parsing. Pass
+-- spellId to skip the slot->id resolution when the caller already has it.
+--   cost:    C_Spell.GetSpellPowerCost returns the *effective* (talent-modified)
+--            cost the engine actually charges -- matches the old tooltip value,
+--            unlike GetSpellInfo().cost which is base-only.
+--   reagent: C_Spell.GetSpellReagents returns { {itemID, count}, ... }; take the
+--            first reagent's itemID (Spell.dbc covers reagent spells like Vanish).
+-- Returns cost, reagentName (localized, for display), reagentId (for counting).
+function CleveRoids.GetSpellCost(spellSlot, bookType, spellId)
+  if not spellId then
+    spellId = select(10, GetSpellInfo(spellSlot, bookType))
   end
 
-  local reagentText = CleveRoids.Frame.reagentFontString:GetText()
-  if reagentText then
-      _, _, reagent = string.find(reagentText, "^Reagents?%s*:%s*(.*)")
-  end
-  reagent = _StripColor(reagent)
-  if reagent == "" then reagent = nil end
+  local cost = 0
+  local reagent, reagentId
 
-  -- Fallback: scan all lines on a named tooltip (handles Vanish layout)
-  if not reagent or not cost then
-    local tip = CleveRoidsTooltipScan
-    if not tip then
-      -- belt & suspenders: create if somehow missing
-      local ok,_ = pcall(CreateFrame, "GameTooltip", "CleveRoidsTooltipScan", UIParent, "GameTooltipTemplate")
-      if not ok or not CleveRoidsTooltipScan then
-        CleveRoidsTooltipScan = CreateFrame("GameTooltip", "CleveRoidsTooltipScan", UIParent)
-        local L1 = CleveRoidsTooltipScan:CreateFontString("$parentTextLeft1",  nil, "GameTooltipText")
-        local R1 = CleveRoidsTooltipScan:CreateFontString("$parentTextRight1", nil, "GameTooltipText")
-        CleveRoidsTooltipScan:AddFontStrings(L1, R1)
-        for i=2,32 do
-          CleveRoidsTooltipScan:CreateFontString("$parentTextLeft"..i,  nil, "GameTooltipText")
-          CleveRoidsTooltipScan:CreateFontString("$parentTextRight"..i, nil, "GameTooltipText")
-        end
-      end
-      CleveRoidsTooltipScan:SetOwner(WorldFrame, "ANCHOR_NONE")
-      tip = CleveRoidsTooltipScan
+  if spellId then
+    local costs = C_Spell.GetSpellPowerCost(spellId)
+    if costs and costs[1] and costs[1].cost then
+      cost = costs[1].cost
     end
 
-    tip:ClearLines()
-    tip:SetOwner(WorldFrame, "ANCHOR_NONE")
-    tip:SetSpell(spellSlot, bookType)
-
-    local base = tip:GetName() or "CleveRoidsTooltipScan"
-    local maxLines = (tip.NumLines and tip:NumLines()) or 32
-
-    for i = 1, maxLines do
-      local L = _G[base.."TextLeft"..i]
-      local R = _G[base.."TextRight"..i]
-      local lt = L and L:GetText() or ""
-      local rt = R and R:GetText() or ""
-
-      if not reagent then
-        if string.find(lt, "^[Rr]eagents?%s*:") then
-          reagent = _StripColor((rt ~= "" and rt) or (string.gsub(lt, "^[Rr]eagents?%s*:%s*", "")))
-        elseif string.find(rt, "^[Rr]eagents?%s*:") then
-          reagent = _StripColor((lt ~= "" and lt) or (string.gsub(rt, "^[Rr]eagents?%s*:%s*", "")))
-        end
-        if reagent == "" then reagent = nil end
-      end
-
-      if not cost and rt ~= "" then
-          local _, _, num = string.find(rt, "^(%d+)%s+(Mana|Energy|Rage|Focus)")
-          if num then cost = tonumber(num) end
-      end
-
-      if reagent and cost then break end
+    local reagents = C_Spell.GetSpellReagents(spellId)
+    if reagents and reagents[1] and reagents[1].itemID then
+      reagentId = reagents[1].itemID
+      reagent = C_Item.GetItemNameByID(reagentId)
     end
   end
 
-  if not reagent or reagent == "" then
-    reagent = nil
-    local name = GetSpellName(spellSlot, bookType)
-    if name then
-        name = CleveRoids.StripRank(name)
-        reagent = _ReagentBySpell[name]
-    end
-  end
-
-  return (cost and tonumber(cost) or 0), (reagent and reagent ~= "" and tostring(reagent) or nil)
+  return cost, (reagent and reagent ~= "" and tostring(reagent) or nil), reagentId
 end
 
 function CleveRoids.GetProxyActionSlot(slot)
@@ -863,7 +803,7 @@ function CleveRoids.TestForActiveAction(actions)
     else
         -- First pass: find first action with conditionals that passes
         for _, action in ipairs(actions.list) do
-            local result = CleveRoids.TestAction(action.cmd, action.args)
+            local result, passedClause = CleveRoids.TestAction(action.cmd, action.args)
 
             -- Check if action has conditionals
             local _, conditionals = CleveRoids.GetParsedMsg(action.args)
@@ -890,6 +830,13 @@ function CleveRoids.TestForActiveAction(actions)
                     if not newActiveAction then hasActive = false end
                 else
                     newActiveAction = action
+                    -- Range/usable checks read the passing group's @unit, which for a
+                    -- multi-group clause need not be group 1's (action.conditionals).
+                    action.activeConditionals = nil
+                    if passedClause and passedClause ~= action.args then
+                        local _, passedConds = CleveRoids.GetParsedMsg(passedClause)
+                        action.activeConditionals = passedConds
+                    end
                     -- Resolve nested macro references for #showtooltip propagation
                     -- If inner macro doesn't resolve, continue to next action
                     local macroName = CleveRoids.GetMacroNameFromAction(action.action)
@@ -964,15 +911,11 @@ function CleveRoids.TestForActiveAction(actions)
 
             -- Enhanced nampower range check with spell ID support
 			if IsSpellInRange then
-                local unit = actions.active.conditionals and actions.active.conditionals.target or "target"
-				if unit == "focus" then
-					unit = CleveRoids.GetFocusUnitId()
-				elseif unit == "focustarget" then
-					local focusUnit = CleveRoids.GetFocusUnitId()
-					unit = focusUnit and (focusUnit .. "target") or nil
+                local conds = actions.active.activeConditionals or actions.active.conditionals
+                local unit = conds and conds.target or "target"
+				if unit then
+					unit = CleveRoids.ResolveVirtualUnit(unit)
 				end
-				local resolvedMark = CleveRoids.ResolveRaidMarkUnit(unit)
-				if resolvedMark then unit = resolvedMark end
 
 				-- PERFORMANCE: Cache spell name construction using two-level cache (no string concat for lookup)
 				local castName = actions.active.action
@@ -1051,19 +994,23 @@ function CleveRoids.TestForActiveAction(actions)
                 -- Prefer IsSpellUsable result if available (Nampower)
                 actions.active.oom = (notEnoughPower == 1)
             else
-                -- SuperWoW: UnitMana returns (current power, caster mana) for druids
-                local currentPower, casterMana = UnitMana("player")
-
-                -- For druids with SuperWoW, use caster mana for spell cost checks
-                local manaToCheck = currentPower
-                if CleveRoids.playerClass == "DRUID" and type(casterMana) == "number" then
-                    manaToCheck = casterMana
+                -- Read caster mana directly for druids (the mana slot survives
+                -- shapeshift, 0 = Enum.PowerType.Mana); other classes use their
+                -- primary power. Replaces the SuperWoW UnitMana 2nd-return hack.
+                local manaToCheck
+                if CleveRoids.playerClass == "DRUID" then
+                    manaToCheck = CleveRoids.ClassicAPI.UnitPower("player", 0)
+                else
+                    manaToCheck = CleveRoids.ClassicAPI.UnitPower("player")
                 end
 
                 actions.active.oom = (manaToCheck < actions.active.spell.cost)
             end
 
-            local start, duration = GetSpellCooldown(actions.active.spell.spellSlot, actions.active.spell.bookType)
+            local start, duration = 0, 0
+            if actions.active.spell.spellSlot then
+                start, duration = GetSpellCooldown(actions.active.spell.spellSlot, actions.active.spell.bookType)
+            end
             local onCooldown = (start > 0 and duration > 0)
 
             if actions.active.isReactive then
@@ -1173,6 +1120,82 @@ function CleveRoids.TestForActiveAction(actions)
     return changed
 end
 
+--------------------------------------------------------------------------------
+-- ClassicAPI macro display
+--------------------------------------------------------------------------------
+
+-- The value to hand C_Macro.SetMacroDisplay for an active action. The nested hop
+-- mirrors the {MacroName} fallback the GameTooltip.SetAction override used: when
+-- `action` is a macro reference, `action.macro` holds the inner macro's
+-- #showtooltip action info (see CreateActionInfo), and `action.action` is the
+-- literal "{Name}" text, which names no spell or item.
+local function DisplayValueFor(action)
+    if not action then return nil end
+    if type(action.macro) == "table" and action.macro.action then
+        return action.macro.action
+    end
+    return action.action
+end
+
+-- Last value handed to SetMacroDisplay, per macro index.
+--
+-- Publishing is NOT free. The client repaints every slot holding the macro through
+-- its own notifier, and that comes back to us as ACTIONBAR_SLOT_CHANGED ->
+-- ClearAction + IndexActionSlot -> TestForActiveAction -> publish. Publishing a value
+-- that has not changed therefore re-indexes slots for nothing and feeds itself.
+-- GetAction and IndexActionSlot both call in on paths that fire constantly, so the
+-- no-op check below is what keeps that from turning into a churn loop.
+local publishedDisplay = {}
+
+-- Publish one macro's resolved action. Nothing is re-evaluated for us, so this must
+-- be called whenever the answer changes; the published value stands until replaced.
+--
+-- `false` is deliberate when there is no active action: it means "this macro is mine,
+-- nothing matched" and shows the question mark. Skipping the call instead would hand
+-- the macro back to ClassicAPI's own #showtooltip parser.
+function CleveRoids.PublishDisplay(actions)
+    if not CleveRoids.ClassicAPIMacroDisplay then return end
+    local macroID = actions and actions.macroID
+    if not macroID then return end  -- SuperMacro macros have no Blizzard index
+
+    local value = DisplayValueFor(actions.active) or false
+    if publishedDisplay[macroID] == value then return end
+    publishedDisplay[macroID] = value
+
+    C_Macro.SetMacroDisplay(macroID, value)
+end
+
+-- Republish every parsed macro. Used after login and after a re-parse, since
+-- ClassicAPI re-evaluates nothing for us. Covers macros that aren't on a bar too,
+-- which is what keeps the macro window grid's icons correct.
+function CleveRoids.PublishAllDisplays()
+    if not CleveRoids.ClassicAPIMacroDisplay then return end
+    -- Forget what we published so every macro republishes once. Callers reach here
+    -- after login and after a re-parse, where a cached value could otherwise
+    -- suppress the publish a freshly rebuilt macro still needs.
+    publishedDisplay = {}
+    for _, macro in pairs(CleveRoids.Macros) do
+        if type(macro) == "table" and macro.actions and macro.actions.macroID then
+            CleveRoids.TestForActiveAction(macro.actions)
+            CleveRoids.PublishDisplay(macro.actions)
+        end
+    end
+end
+
+-- Hand every macro back to ClassicAPI's own parser and stop claiming ownership.
+function CleveRoids.ReleaseDisplays()
+    if not CleveRoids.ClassicAPIMacroDisplay then return end
+    -- Sweep the whole index space rather than the macros we know we published:
+    -- PublishAllDisplays clears that record on every re-parse, so a macro claimed
+    -- before one and gone after it would keep our last value forever. Releasing a
+    -- slot we never claimed costs nothing, and this runs once.
+    for i = 1, CleveRoids.MAX_MACRO_SLOTS do
+        C_Macro.SetMacroDisplay(i, nil)
+    end
+    publishedDisplay = {}
+    CleveRoids.ClassicAPIMacroDisplay = false
+end
+
 -- PERFORMANCE: Static buffer references for hot path
 local _actionsToSlotsBuffer = CleveRoids._actionsToSlotsBuffer
 local _slotsBuffer = CleveRoids._slotsBuffer
@@ -1216,11 +1239,10 @@ function CleveRoids.TestForAllActiveActions()
         local slots = actionsToSlots[actions]
         local stateChanged = CleveRoids.TestForActiveAction(actions)
         if stateChanged then
-            -- Send event to ALL slots that use this macro
-            local count = slots._count
-            for j = 1, count do
-                CleveRoids.SendEventForAction(slots[j], "ACTIONBAR_SLOT_CHANGED", slots[j])
-            end
+            -- Publishing repaints every slot holding this macro through the client's
+            -- own notifier, so there is no per-slot fan-out to do here. It no-ops once
+            -- ReleaseDisplays has handed the macros back.
+            CleveRoids.PublishDisplay(actions)
         end
         -- Clear for reuse (reset count and clear buffer reference)
         for j = 1, slots._count do
@@ -1244,18 +1266,31 @@ function CleveRoids.GetAction(slot)
     local actions = CleveRoids.Actions[slot]
     if actions then return actions end
 
-    local text = GetActionText(slot)
+    -- Identify the macro by its index via ClassicAPI's GetActionInfo so the
+    -- slot is mapped without going through the macro name (no unique-name
+    -- requirement for action-bar macros).
+    local macro
+    local kind, macroID = CleveRoids.ClassicAPI.GetActionInfo(slot)
+    if kind == "macro" and macroID then
+        macro = CleveRoids.GetMacroByIndex(macroID)
+    end
 
-    if text then
-        local macro = CleveRoids.GetMacro(text)
-        if macro then
-            actions = macro.actions
-
-            CleveRoids.TestForActiveAction(actions)
-            CleveRoids.Actions[slot] = actions
-            CleveRoids.SendEventForAction(slot, "ACTIONBAR_SLOT_CHANGED", slot)
-            return actions
+    -- Fallback for SuperMacro (and anything GetActionInfo doesn't tag as a
+    -- macro): resolve by name.
+    if not macro then
+        local text = GetActionText(slot)
+        if text then
+            macro = CleveRoids.GetMacro(text)
         end
+    end
+
+    if macro then
+        actions = macro.actions
+        CleveRoids.TestForActiveAction(actions)
+        CleveRoids.PublishDisplay(actions)
+        CleveRoids.Actions[slot] = actions
+        CleveRoids.SendEventForAction(slot, "ACTIONBAR_SLOT_CHANGED", slot)
+        return actions
     end
 end
 
@@ -1267,29 +1302,29 @@ end
 -- PERFORMANCE: Static buffer for arg backup
 local _originalArgsBuffer = CleveRoids._originalArgsBuffer
 
-function CleveRoids.SendEventForAction(slot, event, ...)
+-- Prebuilt global names. Building "arg" .. i inline cost a concatenation per
+-- iteration, three ten-iteration loops per call, on a function that runs once per
+-- action slot (up to 120 per full index).
+local ARG_GLOBALS = {
+    "arg1", "arg2", "arg3", "arg4", "arg5",
+    "arg6", "arg7", "arg8", "arg9", "arg10",
+}
+
+-- Takes eventArg explicitly rather than `...`: in 1.12's Lua 5.0 a vararg function
+-- allocates an `arg` table on every call, and every caller passes exactly one extra
+-- value (the slot). The old arg.n fan-out below collapsed to a single case.
+function CleveRoids.SendEventForAction(slot, event, eventArg)
     local old_this = this
 
     -- PERFORMANCE: Reuse static buffer instead of creating table each call
     local original_global_args = _originalArgsBuffer
     for i = 1, 10 do
-        original_global_args[i] = _G["arg" .. i]
+        original_global_args[i] = _G[ARG_GLOBALS[i]]
     end
 
-    if type(arg) == "table" then
-
-        local n_varargs_from_arg_table = arg.n or 0
-        for i = 1, 10 do
-            if i <= n_varargs_from_arg_table then
-                _G["arg" .. i] = arg[i]
-            else
-                _G["arg" .. i] = nil
-            end
-        end
-    else
-        for i = 1, 10 do
-            _G["arg" .. i] = nil
-        end
+    _G.arg1 = eventArg
+    for i = 2, 10 do
+        _G[ARG_GLOBALS[i]] = nil
     end
 
     local button_to_call_event_on
@@ -1327,7 +1362,7 @@ function CleveRoids.SendEventForAction(slot, event, ...)
     this = old_this
 
     for i = 1, 10 do
-        _G["arg" .. i] = original_global_args[i]
+        _G[ARG_GLOBALS[i]] = original_global_args[i]
     end
 
     -- FIX: Skip addon handler calls during initial indexing to prevent 120 rapid calls
@@ -1335,30 +1370,9 @@ function CleveRoids.SendEventForAction(slot, event, ...)
         return
     end
 
-    if type(arg) == "table" and arg.n then
-
-        if arg.n == 0 then
-            for _, fn_h in ipairs(CleveRoids.actionEventHandlers) do fn_h(slot, event) end
-        elseif arg.n == 1 then
-            for _, fn_h in ipairs(CleveRoids.actionEventHandlers) do fn_h(slot, event, arg[1]) end
-        elseif arg.n == 2 then
-            for _, fn_h in ipairs(CleveRoids.actionEventHandlers) do fn_h(slot, event, arg[1], arg[2]) end
-        elseif arg.n == 3 then
-            for _, fn_h in ipairs(CleveRoids.actionEventHandlers) do fn_h(slot, event, arg[1], arg[2], arg[3]) end
-        elseif arg.n == 4 then
-            for _, fn_h in ipairs(CleveRoids.actionEventHandlers) do fn_h(slot, event, arg[1], arg[2], arg[3], arg[4]) end
-        elseif arg.n == 5 then
-            for _, fn_h in ipairs(CleveRoids.actionEventHandlers) do fn_h(slot, event, arg[1], arg[2], arg[3], arg[4], arg[5]) end
-        elseif arg.n == 6 then
-            for _, fn_h in ipairs(CleveRoids.actionEventHandlers) do fn_h(slot, event, arg[1], arg[2], arg[3], arg[4], arg[5], arg[6]) end
-        else
-            for _, fn_h in ipairs(CleveRoids.actionEventHandlers) do fn_h(slot, event, arg[1], arg[2], arg[3], arg[4], arg[5], arg[6], arg[7]) end
-        end
-    else
-
-        for _, fn_h in ipairs(CleveRoids.actionEventHandlers) do
-            fn_h(slot, event)
-        end
+    local handlers = CleveRoids.actionEventHandlers
+    for i = 1, table.getn(handlers) do
+        handlers[i](slot, event, eventArg)
     end
 end
 
@@ -1484,6 +1498,37 @@ function CleveRoids.ExecuteMacroBody(body,inline)
                 if startattackArgs then
                     if SlashCmdList.STARTATTACK then
                         SlashCmdList.STARTATTACK(startattackArgs)
+                    end
+                    cmdHandled = true
+                end
+            end
+
+            -- /hsshot /hsfill — HunterSpam (must bypass ChatEdit; /run inside nested macros is unreliable)
+            if not cmdHandled then
+                if string.find(trimmed, "^/hsshot") then
+                    if HunterSpam and HunterSpam.Log then
+                        HunterSpam.Log("cmd", {
+                            cmd = "/hsshot",
+                            via = "SCRM",
+                            stopOnCast = CleveRoids.stopOnCastFlag and true or false,
+                            stopMacro = CleveRoids.stopMacroFlag and true or false,
+                        })
+                    end
+                    if HunterSpam and HunterSpam.DoShot then
+                        HunterSpam.DoShot()
+                    end
+                    cmdHandled = true
+                elseif string.find(trimmed, "^/hsfill") then
+                    if HunterSpam and HunterSpam.Log then
+                        HunterSpam.Log("cmd", {
+                            cmd = "/hsfill",
+                            via = "SCRM",
+                            stopOnCast = CleveRoids.stopOnCastFlag and true or false,
+                            stopMacro = CleveRoids.stopMacroFlag and true or false,
+                        })
+                    end
+                    if HunterSpam and HunterSpam.DoFill then
+                        HunterSpam.DoFill()
                     end
                     cmdHandled = true
                 end
@@ -1637,55 +1682,187 @@ function CleveRoids.FixEmptyTargetSetTarget(conditionals, name, hook)
     return false
 end
 
--- Returns the name of the focus target or nil
-function CleveRoids.GetFocusName()
-    -- 1. Add specific compatibility for pfUI.
-    -- pfUI stores its focus unit information in a table.
-    if pfUI and pfUI.uf and pfUI.uf.focus and pfUI.uf.focus.unitname then
-        return pfUI.uf.focus.unitname
+-- Returns the resolved token, or nil when no focus is set so @focus clauses
+-- silently fall through to the next macro alternative (no warning spam).
+function CleveRoids.GetFocusUnitId()
+    if UnitExists("focus") then
+        return "focus"
     end
-
-    -- Fallback for other focus addons
-    if ClassicFocus_CurrentFocus then
-        return ClassicFocus_CurrentFocus
-    elseif CURR_FOCUS_TARGET then
-        return CURR_FOCUS_TARGET
-    end
-
     return nil
 end
 
--- Attempts to target the focus target.
--- returns: Whether or not it succeeded
-function CleveRoids.TryTargetFocus()
-    local name = CleveRoids.GetFocusName()
+-- Party leader slot (1-4), or nil if player is leader / not in a party
+function CleveRoids.GetPartyLeaderSlot()
+    if GetNumPartyMembers() == 0 then return nil end
+    local i = GetPartyLeaderIndex()
+    if i and i >= 1 and i <= 4 then
+        return i
+    end
+    return nil
+end
 
-    if not name then
+-- Party leader unit token ("partyN"), or nil if player is leader / not in a party
+function CleveRoids.GetPartyLeaderUnit()
+    local i = CleveRoids.GetPartyLeaderSlot()
+    return i and ("party" .. i) or nil
+end
+
+-- Living, connected party ally (player + party1-4). Used by [@partylhp]/[@partylrawhp]/partyhp/partypower.
+function CleveRoids.IsValidPartyAlly(unit)
+    return unit
+        and UnitExists(unit)
+        and UnitIsConnected(unit)
+        and not CleveRoids.IsUnitDeadOrGhost(unit)
+        and UnitIsFriend("player", unit)
+end
+
+-- Call fn(unit) for player then party1..partyN
+function CleveRoids.ForEachPartyUnit(fn)
+    if not fn then return end
+    fn("player")
+    local n = GetNumPartyMembers()
+    for i = 1, n do
+        fn("party" .. i)
+    end
+end
+
+local function PartyUnitHealth(unit)
+    local API = CleveRoids.NampowerAPI
+    local hp = API and API.GetUnitHealth and API.GetUnitHealth(unit) or UnitHealth(unit)
+    local maxHp = API and API.GetUnitMaxHealth and API.GetUnitMaxHealth(unit) or UnitHealthMax(unit)
+    return hp, maxHp
+end
+
+-- Party member (incl. player) with lowest HP %. Nil if none valid.
+function CleveRoids.GetLowestPartyHPUnit()
+    local best, bestPct = nil, nil
+    CleveRoids.ForEachPartyUnit(function(unit)
+        if not CleveRoids.IsValidPartyAlly(unit) then return end
+        local hp, maxHp = PartyUnitHealth(unit)
+        if not maxHp or maxHp <= 0 then return end
+        local pct = 100 * hp / maxHp
+        if not bestPct or pct < bestPct then
+            best, bestPct = unit, pct
+        end
+    end)
+    return best
+end
+
+-- Party member (incl. player) with lowest remaining HP. Nil if none valid.
+function CleveRoids.GetLowestPartyRawHPUnit()
+    local best, bestHp = nil, nil
+    CleveRoids.ForEachPartyUnit(function(unit)
+        if not CleveRoids.IsValidPartyAlly(unit) then return end
+        local hp = PartyUnitHealth(unit)
+        if not hp then return end
+        if not bestHp or hp < bestHp then
+            best, bestHp = unit, hp
+        end
+    end)
+    return best
+end
+
+-- Count living party members (incl. player) matching filter {stat, operator, amount}.
+-- Supports filter.stat == "hp" (percent) or "power" (percent).
+function CleveRoids.CountPartyMembersMatching(filter)
+    if not filter or not filter.stat or not filter.operator or filter.amount == nil then
+        return 0
+    end
+    if not CleveRoids.operators[filter.operator] then return 0 end
+
+    local count = 0
+    CleveRoids.ForEachPartyUnit(function(unit)
+        if not CleveRoids.IsValidPartyAlly(unit) then return end
+        local matches = false
+        if filter.stat == "hp" then
+            matches = CleveRoids.ValidateHp(unit, filter.operator, filter.amount)
+        elseif filter.stat == "power" then
+            matches = CleveRoids.ValidatePower(unit, filter.operator, filter.amount)
+        end
+        if matches then
+            count = count + 1
+        end
+    end)
+    return count
+end
+
+-- Resolve SCRM virtual unit tokens to engine-usable tokens.
+-- Virtual: focus, focustarget, leader, leadertarget, leadertargettarget,
+-- leaderpet, leaderpettarget, pettarget, partylhp, partylrawhp.
+-- Also resolves named raid marks (skull → mark8).
+-- Unknown tokens returned unchanged. Returns nil if a known virtual token cannot resolve.
+function CleveRoids.ResolveVirtualUnit(unit, warn)
+    if not unit then return nil end
+    local u = string.lower(unit)
+
+    if u == "focus" then
+        return CleveRoids.GetFocusUnitId(warn)
+    elseif u == "focustarget" then
+        local fid = CleveRoids.GetFocusUnitId(warn)
+        return fid and (fid .. "target") or nil
+    elseif u == "leader" then
+        return CleveRoids.GetPartyLeaderUnit()
+    elseif u == "leadertarget" then
+        local leader = CleveRoids.GetPartyLeaderUnit()
+        return leader and (leader .. "target") or nil
+    elseif u == "leadertargettarget" then
+        -- Boss (leader's target) → whoever the boss is targeting (usually the tank)
+        local leader = CleveRoids.GetPartyLeaderUnit()
+        return leader and (leader .. "targettarget") or nil
+    elseif u == "leaderpet" then
+        local i = CleveRoids.GetPartyLeaderSlot()
+        return i and ("partypet" .. i) or nil
+    elseif u == "leaderpettarget" then
+        local i = CleveRoids.GetPartyLeaderSlot()
+        return i and ("partypet" .. i .. "target") or nil
+    elseif u == "pettarget" then
+        return "pettarget"
+    elseif u == "partylhp" then
+        return CleveRoids.GetLowestPartyHPUnit()
+    elseif u == "partylrawhp" then
+        return CleveRoids.GetLowestPartyRawHPUnit()
+    end
+
+    if CleveRoids.ResolveRaidMarkUnit then
+        local mark = CleveRoids.ResolveRaidMarkUnit(unit)
+        if mark then return mark end
+    end
+
+    return unit
+end
+
+-- Apply ResolveVirtualUnit to conditionals.target. Returns false if a required
+-- virtual token could not be resolved (caller should abort).
+function CleveRoids.ApplyVirtualUnitTarget(conditionals, warn)
+    if not conditionals or not conditionals.target then
+        return true
+    end
+    local orig = conditionals.target
+    local lower = string.lower(orig)
+    local resolved = CleveRoids.ResolveVirtualUnit(orig, warn)
+
+    if lower == "focus" or lower == "focustarget" then
+        if resolved then
+            conditionals.target = resolved
+            return true
+        end
         return false
     end
 
-    TargetByName(name, true)
-
-    if not UnitExists("target") or (string.lower(UnitName("target")) ~= name) then
-        -- The target switch failed (out of range, LoS, etc.)
-        return false
+    if lower == "leader" or lower == "leadertarget" or lower == "leadertargettarget"
+       or lower == "leaderpet" or lower == "leaderpettarget"
+       or lower == "partylhp" or lower == "partylrawhp" then
+        if not resolved then
+            return false
+        end
+        conditionals.target = resolved
+        return true
     end
 
+    if resolved then
+        conditionals.target = resolved
+    end
     return true
-end
-
--- Resolves pfUI's emulated focus to a real unit token (e.g., "party2", "raid5")
--- Returns the resolved token or nil if focus is not available
--- warn: if true, prints a chat message when no focus addon is installed
-function CleveRoids.GetFocusUnitId(warn)
-    if pfUI and pfUI.uf and pfUI.uf.focus and pfUI.uf.focus.label and pfUI.uf.focus.id
-       and UnitExists(pfUI.uf.focus.label .. pfUI.uf.focus.id) then
-        return pfUI.uf.focus.label .. pfUI.uf.focus.id
-    end
-    if warn and not pfUI and not ClassicFocus_CurrentFocus and not CURR_FOCUS_TARGET then
-        DEFAULT_CHAT_FRAME:AddMessage("|cffff6600SuperCleveRoidMacros:|r [focus] target requires pfUI or a compatible focus addon.", 1, 0.4, 0)
-    end
-    return nil
 end
 
 function CleveRoids.GetMacroNameFromAction(text)
@@ -1823,22 +2000,11 @@ function CleveRoids.ParseSequence(text)
     return sequence
 end
 
-function CleveRoids.ParseMacro(name)
-    if not name then return end
-
-    local macroID = GetMacroIndexByName(name)
-
-    local _, texture, body
-    if macroID and macroID ~= 0 then
-        _, texture, body = GetMacroInfo(macroID)
-    end
-
-    if (not body) and GetSuperMacroInfo then
-        _, texture, body = GetSuperMacroInfo(name)
-    end
-
-    if not texture or not body then return end
-
+-- Shared: build, parse, and cache a macro under `cacheKey`. For action-bar
+-- macros the key is the Blizzard macro index (unique), so duplicate or blank
+-- macro names no longer collide; SuperMacro macros (no index) are keyed by name.
+-- macroID is the Blizzard index if known, else nil.
+local function BuildMacro(cacheKey, macroID, name, texture, body)
     local macro = {
         id      = macroID,
         name    = name,
@@ -1846,6 +2012,10 @@ function CleveRoids.ParseMacro(name)
         body    = body,
         actions = {},
     }
+    -- Back-reference so the update loop, which walks `actions` objects rather than
+    -- macros, can name the macro to C_Macro.SetMacroDisplay. nil for SuperMacro
+    -- macros, which have no Blizzard index and so cannot be published.
+    macro.actions.macroID = macroID
     macro.actions.list = {}
 
     -- build a list of testable actions for the macro
@@ -1910,8 +2080,38 @@ function CleveRoids.ParseMacro(name)
     -- Store whether #showtooltip had an explicit argument (for icon fallback logic)
     macro.actions.explicitTooltip = showTooltipHasArg
 
-    CleveRoids.Macros[name] = macro
+    CleveRoids.Macros[cacheKey] = macro
     return macro
+end
+
+-- Parse a macro by its Blizzard macro index (1-36), caching by index. This is
+-- the action-bar path: a slot's macro is identified by index via ClassicAPI's
+-- GetActionInfo, so duplicate/blank macro names no longer collide.
+function CleveRoids.ParseMacroByIndex(macroID)
+    if not macroID or macroID == 0 then return end
+    local name, texture, body = GetMacroInfo(macroID)
+    if not texture or not body then return end
+    return BuildMacro(macroID, macroID, name, texture, body)
+end
+
+-- Parse a macro by name (explicit {MacroName} / runmacro references, and
+-- SuperMacro macros that have no Blizzard index). Resolves to the index path
+-- when possible so the cache stays index-keyed.
+function CleveRoids.ParseMacro(name)
+    if not name then return end
+
+    local macroID = GetMacroIndexByName(name)
+    if macroID and macroID ~= 0 then
+        return CleveRoids.ParseMacroByIndex(macroID)
+    end
+
+    -- SuperMacro has no Blizzard macro index; cache by name.
+    if GetSuperMacroInfo then
+        local _, texture, body = GetSuperMacroInfo(name)
+        if texture and body then
+            return BuildMacro(name, nil, name, texture, body)
+        end
+    end
 end
 
 function CleveRoids.ParseMsg(msg)
@@ -1927,12 +2127,20 @@ function CleveRoids.ParseMsg(msg)
     conditionals.ignoretooltip = ignorecount
     CleveRoids._ignoretooltip  = ignorecount
 
-    -- capture a single [...] conditional block if present
-    local _, cbEnd, conditionBlock = string.find(msg, "%[(.+)%]")
+    -- Leading [group] blocks and the action after them. A clause with several
+    -- groups (`[a][b] Spell`) parses here as group 1 plus the shared action:
+    -- DoWithConditionals and TestAction expand such a clause into one-group
+    -- variants before parsing, so the callers that do parse a multi-group
+    -- clause directly only rely on the action and on conditionals being non-nil.
+    local _, groups, restStart = CleveRoids.ScanBracketGroups(msg)
+    local conditionBlock = nil
+    if groups.n > 0 then
+        conditionBlock = string.sub(groups[1], 2, -2)
+    end
 
-    -- split off flags/action after the condition block (or from start if none)
+    -- split off flags/action after the groups (or from the start if there are none)
     local _, _, noSpam, cancelAura, action = string.find(
-        string.sub(msg, (cbEnd or 0) + 1),
+        groups.n > 0 and string.sub(msg, restStart) or msg,
         "^%s*(!?)(~?)([^!~]+.*)"
     )
     action = CleveRoids.Trim(action or "")
@@ -1955,15 +2163,9 @@ function CleveRoids.ParseMsg(msg)
         local hasFlag = (noSpam and noSpam ~= "") or (cancelAura and cancelAura ~= "")
         if hasFlag and action ~= "" then
             if noSpam ~= "" then
-                local spamCond = CleveRoids.GetSpammableConditional(action)
-                if spamCond then
-                    conditionals[spamCond] = { action }
-                    -- Also create _groups entry for consistency with Multi()
-                    if not conditionals._groups then
-                        conditionals._groups = {}
-                    end
-                    conditionals._groups[spamCond] = { { values = { action }, operator = "OR" } }
-                end
+                -- ! prefix: handled at execution time via CastSpellNoToggle
+                -- (see DoWithConditionals), no gate conditional needed.
+                conditionals.noSpam = true
             end
             if cancelAura ~= "" then
                 conditionals.cancelaura = action
@@ -1990,6 +2192,9 @@ function CleveRoids.ParseMsg(msg)
     if target then
         conditionBlock = CleveRoids.Trim(string.gsub(conditionBlock, target, ""))
         conditionals.target = string.sub(target, 2)
+        -- Distinguish explicit @unit from FixEmptyTarget's autoSelfCast "player"
+        -- so /use only routes ground items through ClassicAPI for real [@player]/[@cursor].
+        conditionals.hasAtTarget = true
     end
 
     if conditionBlock and conditionals.action then
@@ -2000,6 +2205,9 @@ function CleveRoids.ParseMsg(msg)
                 -- e.g., distance:30:facing>1 → condition="distance", args="30:facing>1")
                 local conditionGroup = CleveRoids.splitStringIgnoringQuotes(conditionGroups, ":")
                 local condition = conditionGroup[1]
+                -- Rewrite deprecated names (e.g. mouseuse -> cursor) so old macros
+                -- keep working and only the current keyword exists downstream.
+                condition = CleveRoids.conditionalAliases[condition] or condition
                 local args = conditionGroup[2]
                 for _cgi = 3, table.getn(conditionGroup) do
                     args = (args or "") .. ":" .. conditionGroup[_cgi]
@@ -2049,6 +2257,31 @@ function CleveRoids.ParseMsg(msg)
                     -- Track if this conditional already existed (repeated via comma)
                     local conditionAlreadyExists = conditionals[condition] ~= nil
 
+                    -- partyhp:<30>2 / partypower:<30>1 — filterOp+amt then countOp+amt (no separator).
+                    -- Also accepts distance-like shorthand partyhp:30>2 (implicit filter <).
+                    local partyCountEntry = nil
+                    if condition == "partyhp" or condition == "partypower" then
+                        local fOp, fAmt, cOp, cAmt
+                        local _, _, a, b, c, d = string.find(args, "^([>~=<]+)(%d+%.?%d*)([>~=<]+)(%d+%.?%d*)$")
+                        if a then
+                            fOp, fAmt, cOp, cAmt = a, b, c, d
+                        else
+                            local thr
+                            _, _, thr, cOp, cAmt = string.find(args, "^(%d+%.?%d*)([>~=<]+)(%d+%.?%d*)$")
+                            if thr then
+                                fOp, fAmt = "<", thr
+                            end
+                        end
+                        if fOp and fAmt and cOp and cAmt
+                           and CleveRoids.operators[fOp] and CleveRoids.operators[cOp] then
+                            partyCountEntry = {
+                                operator = cOp,
+                                amount = tonumber(cAmt),
+                                filter = { operator = fOp, amount = tonumber(fAmt) },
+                            }
+                        end
+                    end
+
                     if not conditionals[condition] then
                         conditionals[condition] = {}
                     elseif type(conditionals[condition]) ~= "table" then
@@ -2063,6 +2296,18 @@ function CleveRoids.ParseMsg(msg)
                     if not conditionals._groups then
                         conditionals._groups = {}
                     end
+
+                    if partyCountEntry then
+                        conditionals._operators[condition] = "OR"
+                        if not conditionals._groups[condition] then
+                            conditionals._groups[condition] = { n = 0 }
+                        end
+                        local currentGroup = { values = { partyCountEntry }, n = 1, operator = "OR" }
+                        local grp = conditionals._groups[condition]
+                        grp.n = grp.n + 1
+                        grp[grp.n] = currentGroup
+                        table.insert(conditionals[condition], partyCountEntry)
+                    else
 
                     -- Check which separator is present in the CURRENT args
                     local hasSlash = string.find(args, "/")
@@ -2190,6 +2435,7 @@ function CleveRoids.ParseMsg(msg)
                             end
                         end
                     end
+                    end -- partyCountEntry else
                 end
             end
         end
@@ -2232,6 +2478,13 @@ end
 
 function CleveRoids.GetMacro(name)
     return CleveRoids.Macros[name] or CleveRoids.ParseMacro(name)
+end
+
+-- Get a parsed macro by its Blizzard macro index (1-36). Used by the action-bar
+-- path so macros are identified by slot/index rather than name.
+function CleveRoids.GetMacroByIndex(macroID)
+    if not macroID then return end
+    return CleveRoids.Macros[macroID] or CleveRoids.ParseMacroByIndex(macroID)
 end
 
 function CleveRoids.GetSequence(args)
@@ -2287,6 +2540,17 @@ function CleveRoids.AdvanceSequence(sequence)
 end
 
 function CleveRoids.TestAction(cmd, args)
+    -- `[a][b] Spell`: first passing group wins. The second return names the
+    -- clause that passed so the display path can read that group's @unit.
+    local variants = CleveRoids.ExpandBracketGroups(args)
+    if variants then
+        for i = 1, variants.n do
+            local r, passed = CleveRoids.TestAction(cmd, variants[i])
+            if r then return r, passed end
+        end
+        return
+    end
+
     local msg, conditionals = CleveRoids.GetParsedMsg(args)
 
     -- Nil-safe guards
@@ -2315,38 +2579,17 @@ function CleveRoids.TestAction(cmd, args)
         return
     end
 
-    if conditionals.target == "focus" then
-        local focusUnitId = CleveRoids.GetFocusUnitId()
-        if focusUnitId then
-            conditionals.target = focusUnitId
-        else
-            if not CleveRoids.GetFocusName() then
-                return
-            end
-            conditionals.target = "target"
-        end
-    elseif conditionals.target == "focustarget" then
-        local focusUnitId = CleveRoids.GetFocusUnitId()
-        if focusUnitId then
-            conditionals.target = focusUnitId .. "target"
-        else
-            if not CleveRoids.GetFocusName() then
-                return
-            end
-            conditionals.target = "targettarget"
-        end
+    -- Resolve virtual @tokens (focus, leadertarget, partylhp, raid marks, …).
+    -- Unresolvable required tokens fail quietly so display matches execution.
+    do
+        local applied = CleveRoids.ApplyVirtualUnitTarget(conditionals)
+        if applied == false then return end
     end
 
     if conditionals.target == "mouseover" then
         if not CleveRoids.IsValidTarget("mouseover", conditionals.help) then
             return false
         end
-    end
-
-    -- Resolve named raid marks (skull/cross/etc.) and mark1-mark8 to native mark# unit tokens
-    if conditionals.target then
-        local resolvedMark = CleveRoids.ResolveRaidMarkUnit(conditionals.target)
-        if resolvedMark then conditionals.target = resolvedMark end
     end
 
     CleveRoids.FixEmptyTarget(conditionals)
@@ -2370,7 +2613,7 @@ function CleveRoids.TestAction(cmd, args)
 
     CleveRoids._isTestingAction = false
     conditionals.target = origTarget
-    return CleveRoids.GetMacroNameFromAction(msg) or msg
+    return CleveRoids.GetMacroNameFromAction(msg) or msg, args
 end
 
 function CleveRoids.DoWithConditionals(msg, hook, fixEmptyTargetFunc, targetBeforeAction, action)
@@ -2380,6 +2623,17 @@ function CleveRoids.DoWithConditionals(msg, hook, fixEmptyTargetFunc, targetBefo
     -- Check macro stop flags (skip non-control commands when flag is set)
     -- This enables /stopmacro, /skipmacro, /firstaction, /nofirstaction to work without SuperMacro for vanilla macros
     if (CleveRoids.stopMacroFlag or CleveRoids.skipMacroFlag) and action ~= "STOPMACRO" and action ~= "SKIPMACRO" and action ~= "FIRSTACTION" and action ~= "NOFIRSTACTION" then
+        return false
+    end
+
+    -- `[a][b] Spell`: try each group as its own clause, first pass wins -- the
+    -- same walk DoCast makes over `[a] Spell; [b] Spell`.
+    local variants = CleveRoids.ExpandBracketGroups(msg)
+    if variants then
+        for i = 1, variants.n do
+            local r = CleveRoids.DoWithConditionals(variants[i], hook, fixEmptyTargetFunc, targetBeforeAction, action)
+            if r then return r end
+        end
         return false
     end
 
@@ -2396,11 +2650,21 @@ function CleveRoids.DoWithConditionals(msg, hook, fixEmptyTargetFunc, targetBefo
             return false
         else
             if string.sub(msg, 1, 1) == "{" and string.sub(msg, -1) == "}" then
+                -- Under /firstaction, ExecuteMacroBody always returns true even when
+                -- every inner /cast failed. That would falsely consume the firstaction
+                -- slot and skip later priority macros (e.g. {KB-Hi} blocking {KB-Prio}).
+                -- Only count as success if an inner cast/use set stopMacroFlag.
+                local watching = CleveRoids.stopOnCastFlag
+                local result
                 if string.sub(msg, 2, 2) == "\"" and string.sub(msg, -2, -2) == "\"" then
-                    return CleveRoids.ExecuteMacroBody(string.sub(msg, 3, -3), true)
+                    result = CleveRoids.ExecuteMacroBody(string.sub(msg, 3, -3), true)
                 else
-                    return CleveRoids.ExecuteMacroByName(string.sub(msg, 2, -2))
+                    result = CleveRoids.ExecuteMacroByName(string.sub(msg, 2, -2))
                 end
+                if watching then
+                    return CleveRoids.stopMacroFlag and true or false
+                end
+                return result
             end
 
             -- Handle STOPMACRO/SKIPMACRO/FIRSTACTION/NOFIRSTACTION without conditionals (bare command)
@@ -2454,32 +2718,17 @@ function CleveRoids.DoWithConditionals(msg, hook, fixEmptyTargetFunc, targetBefo
 
     -- CleveRoids.SetHelp(conditionals)
 
-    if conditionals.target == "focus" or conditionals.target == "focustarget" then
-        local isFocusTarget = conditionals.target == "focustarget"
-        local focusUnitId = CleveRoids.GetFocusUnitId(true)
-
-        if focusUnitId then
-            -- Use the resolved pfUI unit token directly (avoids changing the player's target)
-            conditionals.target = focusUnitId .. (isFocusTarget and "target" or "")
-            needRetarget = false
-        else
-            -- return false if pfUI is installed and no focus is set instead of "invalid target"
-            if pfUI and pfUI.uf and (not pfUI.uf.focus or pfUI.uf.focus.label == nil or pfUI.uf.focus.label == "") then return false end
-            -- Fall back to targeting focus by name
-            if not CleveRoids.TryTargetFocus() then
-                UIErrorsFrame:AddMessage(SPELL_FAILED_BAD_TARGETS, 1.0, 0.0, 0.0, 1.0)
-                conditionals.target = origTarget
-                return false
-            end
-            conditionals.target = isFocusTarget and "targettarget" or "target"
-            needRetarget = true
+    -- Resolve virtual @tokens (focus, leadertarget, partylhp, raid marks, …).
+    -- Unresolvable required tokens fail the clause quietly (same as @mouseover).
+    do
+        local applied = CleveRoids.ApplyVirtualUnitTarget(conditionals)
+        if applied == false then
+            conditionals.target = origTarget
+            return false
         end
-    end
-
-    -- Resolve named raid marks (skull/cross/etc.) and mark1-mark8 to native mark# unit tokens
-    if conditionals.target then
-        local resolvedMark = CleveRoids.ResolveRaidMarkUnit(conditionals.target)
-        if resolvedMark then conditionals.target = resolvedMark end
+        if conditionals.target ~= origTarget then
+            needRetarget = false
+        end
     end
 
     -- Handle [multiscan:priority] - scan enemies and find best target
@@ -2567,10 +2816,15 @@ function CleveRoids.DoWithConditionals(msg, hook, fixEmptyTargetFunc, targetBefo
         if CleveRoids.macroRefDebug then
             CleveRoids.Print("|cff00ffff[MacroRef]|r Detected macro reference: " .. msg)
         end
+        -- Same firstaction rule as the no-conditionals {macro} branch above.
+        local watching = CleveRoids.stopOnCastFlag
         if string.sub(msg, 2, 2) == "\"" and string.sub(msg, -2,-2) == "\"" then
             result = CleveRoids.ExecuteMacroBody(string.sub(msg, 3, -3), true)
         else
             result = CleveRoids.ExecuteMacroByName(string.sub(msg, 2, -2))
+        end
+        if watching then
+            result = CleveRoids.stopMacroFlag and true or false
         end
     elseif msg == "" or msg == nil then
         -- Empty action (conditionals passed but no spell to cast)
@@ -2589,74 +2843,74 @@ function CleveRoids.DoWithConditionals(msg, hook, fixEmptyTargetFunc, targetBefo
         -- FLEXIBLY check for any rank text like "(Rank 9)" before adding the highest rank
         -- Use specific "(Rank" check instead of any parentheses, so spells like
         -- "Faerie Fire (Feral)" still get their rank appended automatically
-        if action == CastSpellByName and not string.find(msg, "%(Rank") then
+        if action == CastSpellByName and not string.find(msg, "^spell:%d+$") and not string.find(msg, "%(Rank") then
             local sp = CleveRoids.GetSpell(msg)
             local rank = sp and (sp.rank or (sp.highest and sp.highest.rank))
             if rank and rank ~= "" then
                 castMsg = msg .. "(" .. rank .. ")"
             end
         end
-        if action == CastSpellByName then
-            -- ! prefix anti-toggle: prevent CastSpellByName from toggling off active spells.
-            -- For Attack/AutoShot/Shoot, use the non-toggling AttackTarget() API.
-            -- For self-buffs/shapeshifts, skip if already active on the player.
-            if conditionals.noSpam then
-                local spamType = CleveRoids.spamConditions[msg]
-                if spamType == "checkchanneled" then
-                    -- Attack/AutoShot/Shoot: use non-toggling API
-                    if msg == CleveRoids.Localized.Attack then
-                        AttackTarget()
-                        if needRetarget then TargetLastTarget() end
-                        conditionals.target = origTarget
-                        return true
-                    end
-                    -- AutoShot/Shoot: skip cast if already active to prevent toggle-off
-                    if not CleveRoids.CheckChanneled(msg) then
-                        if needRetarget then TargetLastTarget() end
-                        conditionals.target = origTarget
-                        return false
-                    end
-                else
-                    -- Self-buff/shapeshift: skip if already active on player
-                    if CleveRoids.ValidatePlayerBuff(msg) then
-                        if needRetarget then TargetLastTarget() end
-                        conditionals.target = origTarget
-                        return false
-                    end
+        if conditionals.cursor then
+            -- [cursor]: place a ground-target spell/item at the cursor via
+            -- ClassicAPI (no AoE-reticle click). Both functions fall back to a
+            -- normal cast/use for non-ground actions.
+            if action == CastSpellByName then
+                local sp = CleveRoids.GetSpell(msg)
+                local spellId = sp and sp.id
+                if not spellId and GetSpellIdForName then
+                    spellId = GetSpellIdForName(castMsg)
                 end
-            end
-            -- Legacy path: !Attack without explicit conditionals (checkchanneled injected)
-            if msg == CleveRoids.Localized.Attack and conditionals.checkchanneled then
-                AttackTarget()
-            else
-                if (CleveRoids.hasSuperwow or CleveRoids.hasCastSpellByNameUnitToken) and conditionals.target and origTarget then
-                    CastSpellByName(castMsg, conditionals.target)
+                if spellId then
+                    C_Spell.CastAtCursor(spellId)
                 else
                     CastSpellByName(castMsg)
                 end
+            else
+                C_Item.UseAtCursor(msg)
+            end
+        elseif action == CastSpellByName then
+            -- spell:<id> — disambiguate same-name spells (e.g. CN Bloodrage vs Blood Fury)
+            local _, _, spellIdStr = string.find(msg, "^spell:(%d+)$")
+            if spellIdStr then
+                local spellId = tonumber(spellIdStr)
+                -- Never cast if the spell is not in the spellbook.
+                -- nampower CastSpellNoQueue's numeric 1st arg is a SPELLBOOK SLOT —
+                -- passing a raw spell ID (2687/20572) OOB-crashes the client.
+                -- Always resolve to a slot and use vanilla CastSpell.
+                local slot, book = FindSpellBookSlotByID and FindSpellBookSlotByID(spellId)
+                if not slot then
+                    result = false
+                else
+                    CastSpell(slot, book or BOOKTYPE_SPELL or "spell")
+                end
+            elseif msg == CleveRoids.Localized.Attack and (conditionals.noSpam or conditionals.checkchanneled) then
+                -- Melee Attack toggle: use the non-toggling AttackTarget (CastSpellNoToggle
+                -- covers auto-repeat + self-auras, not the melee swing).
+                AttackTarget()
+            elseif conditionals.noSpam then
+                -- ! prefix anti-spam. CastSpellNoToggle handles engine toggles
+                -- (auto-repeat Shoot/Auto Shot/Wand, forms/stances/aspects/seals):
+                -- it no-ops when already active instead of toggling off. It only
+                -- covers true toggle auras, though, so also skip re-applying an
+                -- already-active regular self-buff (e.g. Mark of the Wild, Renew).
+                if CleveRoids.ValidatePlayerBuff(msg) then
+                    result = false
+                else
+                    CastSpellNoToggle(castMsg)
+                end
+            elseif (CleveRoids.hasSuperwow or CleveRoids.hasCastSpellByNameUnitToken) and conditionals.target and origTarget then
+                CastSpellByName(castMsg, conditionals.target)
+            else
+                CastSpellByName(castMsg)
             end
         else
-            -- For other actions like UseContainerItem etc.
+            -- For other actions like item use etc. Pass the resolved unit token so
+            -- item-use can target it directly (DoUse -> C_Item.UseItemByName / UseAtUnit);
+            -- action closures that only take (msg) simply ignore the extra args.
             if CleveRoids.equipDebugLog then
-                CleveRoids.Print("|cff00ff00[EquipLog] Calling action('" .. tostring(msg) .. "')|r")
+                CleveRoids.Print("|cff00ff00[EquipLog] Calling action('" .. tostring(msg) .. "', target=" .. tostring(conditionals.target) .. ", hasAt=" .. tostring(conditionals.hasAtTarget) .. ")|r")
             end
-            action(msg)
-        end
-    end
-
-    -- [mouseuse] modifier: auto-click the AOE targeting circle at cursor position
-    if conditionals.mouseuse and SpellIsTargeting() then
-        local wasAttacking = CleveRoids.CurrentSpell.autoAttack
-        CameraOrSelectOrMoveStart()
-        CameraOrSelectOrMoveStop()
-        -- CameraOrSelectOrMoveStart can start auto-attack as a side effect.
-        -- Stop it immediately if it wasn't active before.
-        if not wasAttacking then
-            local slot = CleveRoids.GetProxyActionSlot(CleveRoids.Localized.Attack)
-            if slot and CleveRoids.Hooks.IsCurrentAction(slot) then
-                AttackTarget()
-                CleveRoids.CurrentSpell.autoAttack = false
-            end
+            action(msg, conditionals.target, conditionals.hasAtTarget)
         end
     end
 
@@ -2717,22 +2971,38 @@ local function ResolvePfCastUnit()
     return nil
 end
 
+-- One /pfcast clause. If conditionals are present but no explicit @unit, inject the
+-- pfUI-resolved unit so all conditionals ([help], [nodebuff:X], etc.) evaluate against
+-- the same unit pfUI would cast on, and the final CastSpellByName gets the correct
+-- unit token. Module-level to avoid a closure per call.
+local function PfCastClause(v)
+    if string.find(v, "%[") and not string.find(v, "@") then
+        local unit = ResolvePfCastUnit()
+        if unit then
+            v = string.gsub(v, "%[", "[@" .. unit .. ",", 1)
+        end
+    end
+    return CleveRoids.DoWithConditionals(v, CleveRoids.Hooks.PFCAST_SlashCmd, CleveRoids.FixEmptyTarget, false, CastSpellByName)
+end
+
 -- /pfcast with CleveRoids conditionals: evaluate conditionals then cast via pfUI's mouseover chain.
 -- Called from the SlashCmdList.PFCAST hook (set up by Extensions/Mouseover/pfUI.lua after pfUI loads).
 function CleveRoids.DoPfCast(msg)
     local parts = CleveRoids.splitStringIgnoringQuotes(msg)
     for i = 1, table.getn(parts) do
-        local v = parts[i]
-        -- If conditionals are present but no explicit @unit, inject the pfUI-resolved unit so
-        -- all conditionals ([help], [nodebuff:X], etc.) evaluate against the same unit pfUI
-        -- would cast on, and the final CastSpellByName gets the correct unit token.
-        if string.find(v, "%[") and not string.find(v, "@") then
-            local unit = ResolvePfCastUnit()
-            if unit then
-                v = string.gsub(v, "%[", "[@" .. unit .. ",", 1)
+        -- Expand `[a][b] Spell` here rather than leaving it to DoWithConditionals so
+        -- every group without its own @unit gets the injection, not just the first.
+        local variants = CleveRoids.ExpandBracketGroups(parts[i])
+        local handled
+        if variants then
+            for j = 1, variants.n do
+                handled = PfCastClause(variants[j])
+                if handled then break end
             end
+        else
+            handled = PfCastClause(parts[i])
         end
-        if CleveRoids.DoWithConditionals(v, CleveRoids.Hooks.PFCAST_SlashCmd, CleveRoids.FixEmptyTarget, false, CastSpellByName) then
+        if handled then
             if CleveRoids.stopOnCastFlag then
                 CleveRoids.stopMacroFlag = true
             end
@@ -2768,6 +3038,27 @@ function CleveRoids.DoTarget(msg)
     -- Check macro stop flags
     if CleveRoids.stopMacroFlag or CleveRoids.skipMacroFlag then
         return false
+    end
+
+    -- Conditional /target takes `;` clauses and `[a][b]` groups like /cast does:
+    -- the first clause or group that finds a unit wins. A single-group clause
+    -- falls through to the resolution below.
+    if msg and string.find(msg, "%[") then
+        local parts = CleveRoids.splitStringIgnoringQuotes(msg)
+        local n = table.getn(parts)
+        if n > 1 then
+            for i = 1, n do
+                if CleveRoids.DoTarget(parts[i]) then return true end
+            end
+            return false
+        end
+        local variants = CleveRoids.ExpandBracketGroups(parts[1])
+        if variants then
+            for i = 1, variants.n do
+                if CleveRoids.DoTarget(variants[i]) then return true end
+            end
+            return false
+        end
     end
 
     local action, conditionals = CleveRoids.GetParsedMsg(msg)
@@ -2833,20 +3124,20 @@ function CleveRoids.DoTarget(msg)
             end
         end
 
-        if unitTok == "focus" or unitTok == "focustarget" then
-            local isFocusTarget = unitTok == "focustarget"
-            local fTok = CleveRoids.GetFocusUnitId(true)
-            if fTok then
-                unitTok = fTok .. (isFocusTarget and "target" or "")
-                if not UnitExists(unitTok) then unitTok = nil end
-            else
-                unitTok = nil
+        if unitTok then
+            local lowerTok = string.lower(unitTok)
+            local resolved = CleveRoids.ResolveVirtualUnit(unitTok)
+            if lowerTok == "focus" or lowerTok == "focustarget"
+               or lowerTok == "leader" or lowerTok == "leadertarget"
+               or lowerTok == "leadertargettarget"
+               or lowerTok == "leaderpet" or lowerTok == "leaderpettarget"
+               or lowerTok == "partylhp" or lowerTok == "partylrawhp" then
+                unitTok = resolved
+            elseif resolved then
+                unitTok = resolved
             end
+            if unitTok and not UnitExists(unitTok) then unitTok = nil end
         end
-
-        -- Resolve named raid marks (skull/cross/etc.) and mark1-mark8 to native mark# unit tokens
-        local resolvedMark = CleveRoids.ResolveRaidMarkUnit(unitTok)
-        if resolvedMark then unitTok = resolvedMark end
 
         if unitTok and UnitExists(unitTok) and IsGuidValid(unitTok, conditionals) then
             TargetUnit(unitTok)
@@ -2872,7 +3163,8 @@ function CleveRoids.DoTarget(msg)
     local function addCandidate(unitId)
         if not UnitExists(unitId) then return end
 
-        if wantsHelp and not UnitCanAssist("player", unitId) then return end
+        -- UnitCanAssist is false for friendly NPCs (target dummies, etc.); UnitIsFriend covers those
+        if wantsHelp and not CleveRoids.IsHelpUnit(unitId) then return end
 
         if wantsHarm and not UnitCanAttack("player", unitId) then return end
 
@@ -2906,26 +3198,19 @@ function CleveRoids.DoTarget(msg)
 
     addCandidate("pettarget")
 
-    if pfUI and pfUI.uf and pfUI.uf.focus and pfUI.uf.focus.label and pfUI.uf.focus.id then
-        local focusTok = pfUI.uf.focus.label .. pfUI.uf.focus.id
-        addCandidate(focusTok)
-        addCandidate(focusTok .. "target")
-    end
+    addCandidate("focus")
+    addCandidate("focustarget")
 
-    if CleveRoids.hasSuperwow then
-        local numChildren = WorldFrame:GetNumChildren()
-        local children = { WorldFrame:GetChildren() }
-
-        for i = 1, numChildren do
-            local frame = children[i]
-            if frame and frame:IsVisible() then
-                local success, guid = pcall(frame.GetName, frame, 1)
-                if success and guid and type(guid) == "string" and string.len(guid) > 0 then
-                    if UnitExists(guid) then
-                        addCandidate(guid)
-                    end
-                end
-            end
+    -- Visible nameplates as targeting candidates, via ClassicAPI's nameplateN
+    -- unit tokens -- no SuperWoW WorldFrame child-walk / GUID scrape, and covers
+    -- default vanilla nameplates too. Slots are sparse (a removed plate leaves
+    -- its slot vacant until reused), so scan the full range rather than breaking
+    -- on the first gap; UnitExists returns false cleanly for a free/out-of-range
+    -- slot.
+    for i = 1, 40 do
+        local plate = "nameplate" .. i
+        if UnitExists(plate) then
+            addCandidate(plate)
         end
     end
 
@@ -3022,6 +3307,30 @@ function CleveRoids.DoTarget(msg)
         end
     end
 
+    -- TargetNearestFriend(): cycle nearby friendlies (players + NPCs). Needed for
+    -- [help] scans of friendly NPCs (e.g. target dummies) that never appear on
+    -- party/raid tokens and may lack nameplates; UnitXP only finds enemies.
+    if wantsHelp and type(TargetNearestFriend) == "function" then
+        TargetNearestFriend()
+        if UnitExists("target") then
+            local firstGuidF = CleveRoids.GetGUID("target")
+            if firstGuidF then
+                if IsGuidValid("target", conditionals) then
+                    return true
+                end
+                for i = 1, 50 do
+                    TargetNearestFriend()
+                    if not UnitExists("target") then break end
+                    local guid = CleveRoids.GetGUID("target")
+                    if not guid or guid == firstGuidF then break end
+                    if IsGuidValid("target", conditionals) then
+                        return true
+                    end
+                end
+            end
+        end
+    end
+
     -- No matching target found after all scans - restore and fail
     if originalTargetGuid and UnitExists(originalTargetGuid) then
         TargetUnit(originalTargetGuid)
@@ -3047,15 +3356,17 @@ end
 -- PERFORMANCE: Module-level action to avoid closure allocation per call
 local function _startAttackAction()
     if not UnitExists("target") or CleveRoids.IsUnitDead("target") then TargetNearestEnemy() end
-    -- Check both event-based flag AND action bar state for reliable detection
+    -- Ground truth is the real action-bar state, NOT the cached autoAttack flag.
+    -- The flag can drift stale-true (e.g. set optimistically after AttackTarget below,
+    -- or a target dying without PLAYER_LEAVE_COMBAT firing), which would make us wrongly
+    -- believe we're already swinging and skip the attack. Use the ORIGINAL API here:
+    -- the overridden global IsCurrentAction just echoes the cached flag for the attack
+    -- slot, so it can't detect drift. Fall back to the flag only if the slot is unknown.
     local isAttacking = CleveRoids.CurrentSpell.autoAttack
-    if not isAttacking then
-        -- Fallback: check action bar state via IsCurrentAction
-        local slot = CleveRoids.GetProxyActionSlot(CleveRoids.Localized.Attack)
-        if slot and IsCurrentAction(slot) then
-            CleveRoids.CurrentSpell.autoAttack = true
-            isAttacking = true
-        end
+    local slot = CleveRoids.GetProxyActionSlot(CleveRoids.Localized.Attack)
+    if slot then
+        isAttacking = CleveRoids.Hooks.IsCurrentAction(slot) and true or false
+        CleveRoids.CurrentSpell.autoAttack = isAttacking
     end
     if not isAttacking and not CleveRoids.CurrentSpell.autoAttackLock and UnitExists("target") and UnitCanAttack("player", "target") then
         CleveRoids.CurrentSpell.autoAttackLock = true
@@ -3086,6 +3397,37 @@ function CleveRoids.DoConditionalStartAttack(msg)
     return false
 end
 
+-- Stop channeling on the next tick (nampower v2.18+), behind /stopchanneling.
+-- The underlying API no-ops in two cases and a command that does nothing
+-- without saying why reads as broken, so each gets a one-shot warning -- the
+-- same treatment the [rooted] conditional gives a too-old nampower.
+local _stopChannelingWarned = {}
+local function warnStopChanneling(key, reason)
+    if _stopChannelingWarned[key] then return end
+    _stopChannelingWarned[key] = true
+    DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[SuperCleveRoidMacros]|r /stopchanneling "
+        .. reason .. ".", 1, 0.5, 0.5)
+end
+
+function CleveRoids.StopChanneling()
+    local API = CleveRoids.NampowerAPI
+
+    -- Nothing was sent: nampower is absent or predates ChannelStopCastingNextTick.
+    if not API.StopChannelNextTick() then
+        warnStopChanneling("version", "requires Nampower v2.18.0 or newer")
+        return false
+    end
+
+    -- The call went through, but nampower only acts on it while channel
+    -- queueing is on, so the channel would run to completion regardless.
+    if not API.IsQueueingEnabled("channeling") then
+        warnStopChanneling("setting", "requires Nampower's NP_QueueChannelingSpells setting to be enabled")
+        return false
+    end
+
+    return true
+end
+
 -- PERFORMANCE: Module-level actions to avoid closure allocation per call
 local function _stopAttackAction()
     CleveRoids.DeferStopAttack()
@@ -3093,6 +3435,10 @@ end
 
 local function _stopCastingAction()
     SpellStopCasting()
+end
+
+local function _stopChannelingAction()
+    CleveRoids.StopChanneling()
 end
 
 -- Attempts to conditionally stop an attack. Returns false if no conditionals are found.
@@ -3123,6 +3469,20 @@ function CleveRoids.DoConditionalStopCasting(msg)
     return false
 end
 
+-- Attempts to conditionally interrupt channeling. Returns false if no conditionals are found.
+function CleveRoids.DoConditionalStopChanneling(msg)
+    if not string.find(msg, "%[") then return false end
+
+    -- PERFORMANCE: Use numeric iteration to avoid pairs() iterator allocation
+    local parts = CleveRoids.splitStringIgnoringQuotes(msg)
+    for i = 1, table.getn(parts) do
+        if CleveRoids.DoWithConditionals(parts[i], nil, CleveRoids.FixEmptyTarget, false, _stopChannelingAction) then
+            return true
+        end
+    end
+    return false
+end
+
 local function _clearTargetAction()
     ClearTarget()
 end
@@ -3141,6 +3501,82 @@ function CleveRoids.DoConditionalClearTarget(msg)
     return false
 end
 
+-- Resolve an EQUIPPED inventory slot (1-19) holding the item, or nil.
+-- C_Item.UseItemByName only searches bags, so equipped-only items (trinkets,
+-- weapons) must be fired via their slot. Prefer nampower's fast lookup; fall
+-- back to a manual scan for clients without FindPlayerItemSlot (< v2.18).
+local function FindEquippedItemSlot(msg, itemId)
+    local API = CleveRoids.NampowerAPI
+    if type(API) == "table" and API.FindItemFast then
+        local info = API.FindItemFast(itemId or msg)
+        if info and info.inventoryID then return info.inventoryID end
+        -- Found only in bags (or not at all) -> not an equipped-only item.
+        if info then return nil end
+    end
+    -- Fallback scan of equipped slots by ID or name, read straight from each
+    -- slot via ClassicAPI (GetInventoryItemID / C_Item.GetItemNameByID) -- no
+    -- link string built, no "item:"/"|h[..]|h" parse. Slots are 1-19.
+    local wantLower = (not itemId) and string_lower(msg) or nil
+    for slot = 1, 19 do
+        local id = GetInventoryItemID("player", slot)
+        if id then
+            if itemId then
+                if id == itemId then return slot end
+            else
+                local nm = C_Item.GetItemNameByID(id)
+                if nm and string_lower(nm) == wantLower then return slot end
+            end
+        end
+    end
+    return nil
+end
+
+-- ClassicAPI owns ground-item placement APIs; SCRM owns SlashCmdList.USE.
+-- Bridge [@player]/[@cursor] so /use does not leave the green reticle up.
+-- Returns true when ClassicAPI handled the use (caller must not Use*Item again).
+function CleveRoids.UseItemViaClassicAPI(item, target)
+    if not item or item == "" or not target then
+        return false
+    end
+    if type(C_Item) ~= "table" then
+        return false
+    end
+
+    local t = string_lower(target)
+    if t ~= "player" and t ~= "cursor" then
+        return false
+    end
+    if t == "player" and not C_Item.UseAtUnit then
+        return false
+    end
+    if t == "cursor" and not C_Item.UseAtCursor then
+        return false
+    end
+
+    -- Same item shapes ClassicAPI's /use accepts: slot, "bag slot", itemID, or name.
+    local itemArg = item
+    local asNumber = tonumber(item)
+    local _, _, bag, slot = string_find(item, "^(%d+)%s+(%d+)$")
+    if bag then
+        itemArg = { bagID = tonumber(bag), slotIndex = tonumber(slot) }
+    elseif asNumber and asNumber >= 1 and asNumber <= 19 then
+        itemArg = { equipmentSlotIndex = asNumber }
+    elseif asNumber and asNumber > 19 then
+        itemArg = asNumber
+    end
+
+    if CleveRoids.equipDebugLog then
+        CleveRoids.Print("|cff888888[UseLog] /use [@" .. t .. "] via C_Item." ..
+            (t == "cursor" and "UseAtCursor" or "UseAtUnit") .. "|r")
+    end
+    if t == "cursor" then
+        C_Item.UseAtCursor(itemArg)
+    else
+        C_Item.UseAtUnit(itemArg, "player")
+    end
+    return true
+end
+
 -- Attempts to use or equip an item by a set of conditionals
 -- Also checks if a condition is a spell so that you can mix item and spell use
 -- msg: The raw message intercepted from a /use or /equip command
@@ -3152,184 +3588,49 @@ function CleveRoids.DoUse(msg)
 
     local handled = false
 
-    local action = function(msg)
+    local action = function(msg, unit, hasAtTarget)
         -- Defensive: make sure we are not in "split stack" mode and nothing is on the cursor
         if type(CloseStackSplitFrame) == "function" then CloseStackSplitFrame() end
         if CursorHasItem and CursorHasItem() then ClearCursor() end
 
-        -- Try to interpret the message as a direct inventory slot ID first.
+        -- Explicit [@player]/[@cursor]: place ground-target items at feet / under mouse.
+        -- UseItemByName alone leaves the green reticle up for bombs/grenades.
+        if hasAtTarget and CleveRoids.UseItemViaClassicAPI(msg, unit) then
+            return
+        end
+
+        -- Only pass a cast target when it actually exists, so a stale @unit doesn't
+        -- waste a consumable. Self-use items (potions/food/hearth) ignore it anyway.
+        -- "cursor" is not a UnitExists token — placement was handled above.
+        local useUnit = (unit and unit ~= "cursor" and UnitExists(unit)) and unit or nil
+
+        -- Direct equipped inventory slot ID (1-19): use it in place.
         local slotId = tonumber(msg)
-        if slotId and slotId >= 1 and slotId <= 19 then -- Character slots are 1-19
+        if slotId and slotId >= 1 and slotId <= 19 then
             ClearCursor() -- extra safety before using equipped items
             UseInventoryItem(slotId)
             return
         end
 
-        -- Try to interpret as item ID (numbers > 19)
-        -- v2.18+: Use FindPlayerItemSlot directly for item IDs (no name resolution needed)
-        if slotId and slotId > 19 then
-            local API = CleveRoids.NampowerAPI
-            -- v2.18+: Native lookup can find item directly by ID
-            if API and API.features and API.features.hasFindPlayerItemSlot then
-                local itemInfo = API.FindItemFast(slotId)
-                if itemInfo then
-                    ClearCursor()
-                    if itemInfo.inventoryID then
-                        if CleveRoids.equipDebugLog then
-                            CleveRoids.Print("|cff888888[UseLog] /use " .. slotId .. " via UseInventoryItem(" .. itemInfo.inventoryID .. ") [v2.18 ID lookup]|r")
-                        end
-                        UseInventoryItem(itemInfo.inventoryID)
-                        return
-                    elseif itemInfo.bagID and itemInfo.slot then
-                        if CleveRoids.equipDebugLog then
-                            CleveRoids.Print("|cff888888[UseLog] /use " .. slotId .. " via UseContainerItem(" .. itemInfo.bagID .. "," .. itemInfo.slot .. ") [v2.18 ID lookup]|r")
-                        end
-                        UseContainerItem(itemInfo.bagID, itemInfo.slot)
-                        return
-                    end
-                end
-                -- Item not found by ID - fail
-                if CleveRoids.equipDebugLog then
-                    CleveRoids.Print("|cffff8800[UseLog] Item ID " .. slotId .. " not found in inventory [v2.18]|r")
-                end
-                return
+        -- Equipped items (trinkets, weapons) live outside bags, so C_Item.UseItemByName
+        -- can't reach them. Fire an equipped match through its slot first.
+        local invSlot = FindEquippedItemSlot(msg, slotId)
+        if invSlot then
+            ClearCursor()
+            if CleveRoids.equipDebugLog then
+                CleveRoids.Print("|cff888888[UseLog] /use " .. msg .. " via UseInventoryItem(" .. invSlot .. ")|r")
             end
-
-            -- Fallback: Resolve item ID to name for legacy lookup
-            local itemName = nil
-            if API and API.GetItemName then
-                itemName = API.GetItemName(slotId)
-            end
-            -- Fall back to GetItemInfo
-            if not itemName and GetItemInfo then
-                itemName = GetItemInfo(slotId)
-            end
-            if itemName then
-                if CleveRoids.equipDebugLog then
-                    CleveRoids.Print("|cff888888[UseLog] Resolved item ID " .. slotId .. " to '" .. itemName .. "'|r")
-                end
-                msg = itemName  -- Replace ID with name for subsequent lookups
-            else
-                if CleveRoids.equipDebugLog then
-                    CleveRoids.Print("|cffff8800[UseLog] Could not resolve item ID " .. slotId .. " - item not in cache|r")
-                end
-                -- Item not in client cache - can't resolve without seeing it first
-                return
-            end
+            UseInventoryItem(invSlot)
+            return
         end
 
-        -- v2.18+: Use native fast lookup (much faster than Lua cache + scan)
-        local API = CleveRoids.NampowerAPI
-        if API and API.features and API.features.hasFindPlayerItemSlot then
-            local itemInfo = API.FindItemFast(msg)
-            if itemInfo then
-                ClearCursor()
-                if itemInfo.inventoryID then
-                    if CleveRoids.equipDebugLog then
-                        CleveRoids.Print("|cff888888[UseLog] /use " .. msg .. " via UseInventoryItem(" .. itemInfo.inventoryID .. ") [v2.18 native]|r")
-                    end
-                    UseInventoryItem(itemInfo.inventoryID)
-                    return
-                elseif itemInfo.bagID and itemInfo.slot then
-                    if CleveRoids.equipDebugLog then
-                        CleveRoids.Print("|cff888888[UseLog] /use " .. msg .. " via UseContainerItem(" .. itemInfo.bagID .. "," .. itemInfo.slot .. ") [v2.18 native]|r")
-                    end
-                    UseContainerItem(itemInfo.bagID, itemInfo.slot)
-                    return
-                end
-            end
-            -- v2.18 lookup didn't find item - fall through to legacy path
-            -- (might be partial match or different case that native doesn't handle)
-        end
-
-        -- PERFORMANCE: Try cache lookup first (O(1) instead of O(n) scan)
-        -- IMPORTANT: Validate cache hits to prevent stale data during combat
-        -- (IndexItems() is skipped during combat, so cache may have old bag/slot locations)
-        local location = CleveRoids.FindItemLocation(msg)
-        if location then
-            local cacheValid = false
-            local qname = string_lower(msg)
-
-            if location.type == "inventory" then
-                -- Validate: check if this slot actually contains the item we want
-                local link = GetInventoryItemLink("player", location.inventoryID)
-                if link then
-                    local _, _, nm = string_find(link, "|h%[(.-)%]|h")
-                    if nm and string_lower(nm) == qname then
-                        cacheValid = true
-                    end
-                end
-            else
-                -- Validate: check if this bag slot actually contains the item we want
-                local link = GetContainerItemLink(location.bag, location.slot)
-                if link then
-                    local _, _, nm = string_find(link, "|h%[(.-)%]|h")
-                    if nm and string_lower(nm) == qname then
-                        cacheValid = true
-                    end
-                end
-            end
-
-            if cacheValid then
-                ClearCursor()
-                if location.type == "inventory" then
-                    if CleveRoids.equipDebugLog then
-                        CleveRoids.Print("|cff888888[UseLog] /use " .. msg .. " via UseInventoryItem(" .. location.inventoryID .. ") [cached]|r")
-                    end
-                    UseInventoryItem(location.inventoryID)
-                else
-                    if CleveRoids.equipDebugLog then
-                        CleveRoids.Print("|cff888888[UseLog] /use " .. msg .. " via UseContainerItem(" .. location.bag .. "," .. location.slot .. ") [cached]|r")
-                    end
-                    UseContainerItem(location.bag, location.slot)
-                end
-                return
-            elseif CleveRoids.equipDebugLog then
-                CleveRoids.Print("|cff888888[UseLog] /use " .. msg .. " - cache STALE, falling back to scan|r")
-            end
-        end
-
-        -- Slow path fallback: full scan for substring matches or cache miss
-        local qname = string_lower(msg)
-
-        -- Search equipped inventory slots first (for trinkets, etc.)
-        for slot = 0, 19 do
-            local link = GetInventoryItemLink("player", slot)
-            if link then
-                local _, _, nm = string_find(link, "|h%[(.-)%]|h")
-                if nm and string_lower(nm) == qname then
-                    if CleveRoids.equipDebugLog then
-                        CleveRoids.Print("|cff888888[UseLog] /use " .. msg .. " via UseInventoryItem(" .. slot .. ")|r")
-                    end
-                    ClearCursor()
-                    UseInventoryItem(slot)
-                    return
-                end
-            end
-        end
-
-        -- Then search bags
-        for bag = 0, 4 do
-            local numSlots = GetContainerNumSlots(bag) or 0
-            for bagSlot = 1, numSlots do
-                local link = GetContainerItemLink(bag, bagSlot)
-                if link then
-                    local _, _, nm = string_find(link, "|h%[(.-)%]|h")
-                    if nm and string_lower(nm) == qname then
-                        if CleveRoids.equipDebugLog then
-                            CleveRoids.Print("|cff888888[UseLog] /use " .. msg .. " via UseContainerItem(" .. bag .. "," .. bagSlot .. ")|r")
-                        end
-                        ClearCursor()
-                        UseContainerItem(bag, bagSlot)
-                        return
-                    end
-                end
-            end
-        end
-
+        -- Bag path: one ClassicAPI call finds the item in bags and dispatches by
+        -- type (potion/food/scroll/on-use), honoring `useUnit` for targeted-spell
+        -- items. itemIDs pass as numbers; names/links pass through unchanged.
         if CleveRoids.equipDebugLog then
-            CleveRoids.Print("|cff888888[UseLog] /use " .. msg .. " - not found in equipped slots or bags|r")
+            CleveRoids.Print("|cff888888[UseLog] /use " .. msg .. " via C_Item.UseItemByName(" .. tostring(slotId or msg) .. ", " .. tostring(useUnit) .. ")|r")
         end
+        C_Item.UseItemByName(slotId or msg, useUnit)
     end
 
     -- PERFORMANCE: Use numeric iteration to avoid pairs() iterator allocation
@@ -3355,12 +3656,9 @@ local function FindItemInBagsByName(itemName)
     for bag = 0, 4 do
         local numSlots = GetContainerNumSlots(bag) or 0
         for slot = 1, numSlots do
-            local link = GetContainerItemLink(bag, slot)
-            if link then
-                local _, _, name = string_find(link, "|h%[(.-)%]|h")
-                if name and string_lower(name) == lowerName then
-                    return bag, slot
-                end
+            local name = C_Item.GetItemName({ bagID = bag, slotIndex = slot })
+            if name and string_lower(name) == lowerName then
+                return bag, slot
             end
         end
     end
@@ -3497,12 +3795,7 @@ function CleveRoids.EquipBagItem(msg, slotOrOffhand)
     end
 
     -- Note what's currently in the target slot so we can invalidate its cache
-    local oldSlotLink = GetInventoryItemLink("player", invslot)
-    local oldSlotName = nil
-    if oldSlotLink then
-        local _, _, name = string_find(oldSlotLink, "|h%[(.-)%]|h")
-        oldSlotName = name
-    end
+    local oldSlotName = C_Item.GetItemName({ equipmentSlotIndex = invslot })
 
     -- Helper to invalidate displaced item's cache
     local function InvalidateDisplacedItem()
@@ -3519,10 +3812,9 @@ function CleveRoids.EquipBagItem(msg, slotOrOffhand)
     local pairedSlots = {[13] = 14, [14] = 13, [16] = 17, [17] = 16, [11] = 12, [12] = 11}
     local checkSlot = pairedSlots[invslot]
     if checkSlot then
-        local link = GetInventoryItemLink("player", checkSlot)
-        if link then
-            local _, _, slotItemName = string_find(link, "|h%[(.-)%]|h")
-            if slotItemName and string_lower(slotItemName) == string_lower(msg) then
+        local slotItemName = C_Item.GetItemName({ equipmentSlotIndex = checkSlot })
+        if slotItemName then
+            if string_lower(slotItemName) == string_lower(msg) then
                 -- Item found in paired slot - but prefer a bag copy if one exists
                 local bagCopyBag, bagCopySlot = FindItemInBagsByName(msg)
                 if bagCopyBag then
@@ -3574,17 +3866,14 @@ function CleveRoids.EquipBagItem(msg, slotOrOffhand)
             -- Verify the item actually landed in the target slot
             -- EquipItemByName may silently no-op for same-named items in paired slots
             -- (e.g., dual-wielding Scimitar: MH copy found first, "equipped" to same slot)
-            local newLink = GetInventoryItemLink("player", invslot)
-            if newLink then
-                local _, _, newName = string_find(newLink, "|h%[(.-)%]|h")
-                if newName and string_lower(newName) == string_lower(msg) then
-                    if CleveRoids.Items then
-                        CleveRoids.Items[msg] = nil
-                        CleveRoids.Items[string_lower(msg)] = nil
-                    end
-                    InvalidateDisplacedItem()
-                    return true
+            local newName = C_Item.GetItemName({ equipmentSlotIndex = invslot })
+            if newName and string_lower(newName) == string_lower(msg) then
+                if CleveRoids.Items then
+                    CleveRoids.Items[msg] = nil
+                    CleveRoids.Items[string_lower(msg)] = nil
                 end
+                InvalidateDisplacedItem()
+                return true
             end
             -- Verification failed - EquipItemByName didn't place item in target slot
             if CleveRoids.equipDebugLog then
@@ -3626,10 +3915,9 @@ function CleveRoids.EquipBagItem(msg, slotOrOffhand)
         local ok = pcall(EquipItemByName, item.name, invslot)
         if ok then
             -- Verify the item actually landed in the target slot (same guard as above)
-            local newLink = GetInventoryItemLink("player", invslot)
-            if newLink then
-                local _, _, newName = string_find(newLink, "|h%[(.-)%]|h")
-                if newName and string_lower(newName) == string_lower(item.name) then
+            local newName = C_Item.GetItemName({ equipmentSlotIndex = invslot })
+            if newName then
+                if string_lower(newName) == string_lower(item.name) then
                     if CleveRoids.Items then
                         CleveRoids.Items[item.name] = nil
                         CleveRoids.Items[string_lower(item.name)] = nil
@@ -3663,6 +3951,19 @@ function CleveRoids.EquipBagItem(msg, slotOrOffhand)
     end
 
     if not pickupSuccess then
+        ClearCursor()
+        CleveRoids.equipInProgress = false
+        return false
+    end
+
+    -- Verify the cursor holds the item we meant to pick up. The bag can shift
+    -- between the lookup and the pickup (item consumed/moved/reorganized), in
+    -- which case we'd otherwise equip whatever landed on the cursor. Only abort
+    -- on a definitive mismatch (false); nil = can't tell -> trust CursorHasItem.
+    if item.id and CleveRoids.ClassicAPI.CursorHoldsItemID(item.id) == false then
+        if CleveRoids.equipDebugLog then
+            CleveRoids.Print("|cffff8800[EquipLog] Cursor holds wrong item after pickup; aborting equip|r")
+        end
         ClearCursor()
         CleveRoids.equipInProgress = false
         return false
@@ -3705,11 +4006,8 @@ local function _equipRing2Action(msg)
     return CleveRoids.EquipBagItem(msg, 12)
 end
 
-local function _unshiftAction()
-    local currentShapeshiftIndex = CleveRoids.GetCurrentShapeshiftIndex()
-    if currentShapeshiftIndex ~= 0 then
-        CastShapeshiftForm(currentShapeshiftIndex)
-    end
+local function _cancelFormAction()
+    CancelShapeshiftForm()
 end
 
 function CleveRoids.DoEquipMainhand(msg)
@@ -3780,27 +4078,108 @@ function CleveRoids.DoEquipRing2(msg)
     return false
 end
 
-function CleveRoids.DoUnshift(msg)
+-- Equip a ClassicAPI equipment set by name. msg is the resolved set name (after
+-- conditional parsing). ClassicAPI's own /equipset is a bare
+-- GetEquipmentSetID -> UseEquipmentSet with no conditional support; routing it
+-- through DoWithConditionals adds [combat]/[mod]/@unit/etc. and ";"-separated
+-- fallthrough (first set whose conditionals pass wins). Nil-guarded so a client
+-- without the EquipmentSet API just no-ops instead of erroring.
+local function _equipSetAction(msg)
+    if not msg or msg == "" then return false end
+    if type(C_EquipmentSet) ~= "table" then return false end
+    local setID = C_EquipmentSet.GetEquipmentSetID(msg)
+    if not setID then return false end
+    C_EquipmentSet.UseEquipmentSet(setID)
+    return true
+end
+
+function CleveRoids.DoEquipSet(msg)
+    local parts = CleveRoids.splitStringIgnoringQuotes(msg)
+    for i = 1, table.getn(parts) do
+        local v = string.gsub(parts[i], "^%?", "")
+        if CleveRoids.DoWithConditionals(v, _equipSetAction, CleveRoids.FixEmptyTarget, false, _equipSetAction) then
+            return true
+        end
+    end
+    return false
+end
+
+-- Resolve an Outfitter outfit slot item name. Requires Outfitter.
+-- slotName: "MainHandSlot" or "SecondaryHandSlot"
+local function _getOutfitterSlotItemName(outfitName, slotName)
+    if not outfitName or outfitName == "" then return nil end
+    if type(Outfitter_FindOutfitByName) ~= "function" then return nil end
+    if not gOutfitter_Settings or not gOutfitter_Settings.Outfits then return nil end
+
+    local outfit = Outfitter_FindOutfitByName(outfitName)
+    if not outfit or not outfit.Items then return nil end
+
+    local item = outfit.Items[slotName]
+    if not item or not item.Name or item.Name == "" or item.Code == 0 then
+        return nil
+    end
+    return item.Name
+end
+
+-- /eqomh <Outfitter outfit name> — equip that outfit's main-hand item only
+local function _equipOutfitterMainhandAction(msg)
+    local itemName = _getOutfitterSlotItemName(msg, "MainHandSlot")
+    if not itemName then return false end
+    return CleveRoids.EquipBagItem(itemName, false)
+end
+
+-- /eqooh <Outfitter outfit name> — equip that outfit's off-hand item only
+local function _equipOutfitterOffhandAction(msg)
+    local itemName = _getOutfitterSlotItemName(msg, "SecondaryHandSlot")
+    if not itemName then return false end
+    return CleveRoids.EquipBagItem(itemName, true)
+end
+
+function CleveRoids.DoEquipOutfitterMainhand(msg)
+    local parts = CleveRoids.splitStringIgnoringQuotes(msg)
+    for i = 1, table.getn(parts) do
+        local v = string.gsub(parts[i], "^%?", "")
+        if CleveRoids.DoWithConditionals(v, _equipOutfitterMainhandAction, CleveRoids.FixEmptyTarget, false, _equipOutfitterMainhandAction) then
+            return true
+        end
+    end
+    return false
+end
+
+function CleveRoids.DoEquipOutfitterOffhand(msg)
+    local parts = CleveRoids.splitStringIgnoringQuotes(msg)
+    for i = 1, table.getn(parts) do
+        local v = string.gsub(parts[i], "^%?", "")
+        if CleveRoids.DoWithConditionals(v, _equipOutfitterOffhandAction, CleveRoids.FixEmptyTarget, false, _equipOutfitterOffhandAction) then
+            return true
+        end
+    end
+    return false
+end
+
+function CleveRoids.DoCancelForm(msg)
     local handled
     -- PERFORMANCE: Use numeric iteration to avoid pairs() iterator allocation
     local parts = CleveRoids.splitStringIgnoringQuotes(msg)
     for i = 1, table.getn(parts) do
         handled = false
-        if CleveRoids.DoWithConditionals(parts[i], _unshiftAction, CleveRoids.FixEmptyTarget, false, _unshiftAction) then
+        if CleveRoids.DoWithConditionals(parts[i], _cancelFormAction, CleveRoids.FixEmptyTarget, false, _cancelFormAction) then
             handled = true
             break
         end
     end
 
     if handled == nil then
-        _unshiftAction()
+        _cancelFormAction()
     end
 
     return handled
 end
 
+CleveRoids.DoUnshift = CleveRoids.DoCancelForm
+
 function CleveRoids.DoRetarget()
-    if GetUnitName("target") == nil
+    if UnitName("target") == nil
         or UnitHealth("target") == 0
         or not UnitCanAttack("player", "target")
     then
@@ -3809,12 +4188,180 @@ function CleveRoids.DoRetarget()
     end
 end
 
+-- Clear own target, stop cast/auto-shot, and recall pet (assist sync miss path).
+function CleveRoids.AssistClear()
+    if UnitExists("target") then
+        ClearTarget()
+    end
+    SpellStopCasting()
+    if UnitExists("pet") and not UnitIsDead("pet") then
+        PetPassiveMode()
+        PetFollow()
+    end
+end
+
+-- Sync own pet with party leader's pet: attack when leader pet has a target or is
+-- in combat (partypetNtarget can lag behind the pet actually charging); recall otherwise.
+function CleveRoids.DoPetSyncLeader()
+    if not UnitExists("pet") or UnitIsDead("pet") then
+        return false
+    end
+
+    local i = CleveRoids.GetPartyLeaderSlot()
+    if not i then
+        PetPassiveMode()
+        PetFollow()
+        return false
+    end
+
+    local leaderPet = "partypet" .. i
+    local leaderPetTarget = leaderPet .. "target"
+    local shouldAttack = false
+
+    if UnitExists(leaderPetTarget)
+        and not CleveRoids.IsUnitDead(leaderPetTarget)
+        and UnitCanAttack("player", leaderPetTarget)
+    then
+        shouldAttack = true
+    elseif UnitExists(leaderPet)
+        and UnitAffectingCombat(leaderPet)
+        and UnitExists("target")
+        and UnitCanAttack("player", "target")
+    then
+        shouldAttack = true
+    end
+
+    if shouldAttack then
+        PetAttack()
+        return true
+    end
+
+    PetPassiveMode()
+    PetFollow()
+    return false
+end
+
+-- True when `unit` looks like a "...target" token (leadertarget, party1target, …).
+local function IsTargetUnitToken(unit)
+    if not unit then return false end
+    local lower = string.lower(unit)
+    return lower == "leadertarget" or lower == "focustarget"
+        or lower == "leadertargettarget" or lower == "leaderpettarget"
+        or lower == "pettarget"
+        or string.find(lower, "target$")
+end
+
+-- Sync target to another unit's target (default: party leader).
+-- Valid acquire → TargetUnit. Missing/friendly/dead → AssistClear (unless quietFail).
+-- Conditionals apply to the *acquired* unit (their target), not the assist source.
+-- Examples:
+--   /assist [@leader]
+--   /assist [@leader,harm,nodead]
+--   /ast [@focus]
+-- Bare /assist or /assist Name keeps vanilla AssistUnit / AssistByName (Console.lua).
+-- quietFail: when true, do not AssistClear on miss (used while trying `;` / `[a][b]` alts).
+function CleveRoids.DoAssist(msg, quietFail)
+    if CleveRoids.stopMacroFlag or CleveRoids.skipMacroFlag then
+        return false
+    end
+
+    msg = CleveRoids.Trim(msg or "")
+
+    local function fail()
+        if not quietFail then
+            CleveRoids.AssistClear()
+        end
+        return false
+    end
+
+    -- `;` alternatives and `[a][b]` groups — first success wins (same as /target).
+    if msg ~= "" and string.find(msg, "%[") then
+        local parts = CleveRoids.splitStringIgnoringQuotes(msg)
+        local n = table.getn(parts)
+        if n > 1 then
+            for i = 1, n do
+                if CleveRoids.DoAssist(parts[i], true) then return true end
+            end
+            return fail()
+        end
+        local variants = CleveRoids.ExpandBracketGroups(parts[1])
+        if variants then
+            for i = 1, variants.n do
+                if CleveRoids.DoAssist(variants[i], true) then return true end
+            end
+            return fail()
+        end
+    end
+
+    local _, conditionals = CleveRoids.GetParsedMsg(msg)
+    if type(conditionals) ~= "table" then
+        conditionals = {}
+    end
+
+    -- Default assist source: party leader.
+    local origUnit = conditionals.target
+    if not origUnit then
+        conditionals.target = "leader"
+        origUnit = "leader"
+    end
+
+    local applied = CleveRoids.ApplyVirtualUnitTarget(conditionals)
+    if applied == false or not conditionals.target then
+        return fail()
+    end
+
+    local assistUnit = conditionals.target
+    local acquire
+    if IsTargetUnitToken(origUnit) or IsTargetUnitToken(assistUnit) then
+        acquire = assistUnit
+    else
+        acquire = assistUnit .. "target"
+    end
+
+    if not UnitExists(acquire) then
+        return fail()
+    end
+
+    -- Evaluate conditionals against the unit we would acquire.
+    local check = {}
+    for k, v in pairs(conditionals) do
+        check[k] = v
+    end
+    check.target = acquire
+
+    for k, _ in pairs(check) do
+        if not CleveRoids.ignoreKeywords[k] then
+            local fn = CleveRoids.Keywords[k]
+            if not fn or not fn(check) then
+                return fail()
+            end
+        end
+    end
+
+    -- Default gate when caller did not specify harm/help/dead filters:
+    -- only lock a living hostile (assist use case).
+    if not conditionals.harm and not conditionals.help
+        and not conditionals.dead and not conditionals.nodead
+        and not conditionals.alive
+    then
+        if CleveRoids.IsUnitDead(acquire) or not UnitCanAttack("player", acquire) then
+            return fail()
+        end
+    end
+
+    if not UnitIsUnit("target", acquire) then
+        TargetUnit(acquire)
+    end
+    return true
+end
+
 -- Attempts to stop macro (stops ALL remaining lines including parent macros)
 function CleveRoids.DoStopMacro(msg)
     -- PERFORMANCE: Use numeric iteration to avoid pairs() iterator allocation
+    -- FixEmptyTarget so bare [exists]/[nodead] bind to current target when no @unit.
     local parts = CleveRoids.splitStringIgnoringQuotes(CleveRoids.Trim(msg))
     for i = 1, table.getn(parts) do
-        if CleveRoids.DoWithConditionals(parts[i], nil, nil, false, "STOPMACRO") then
+        if CleveRoids.DoWithConditionals(parts[i], nil, CleveRoids.FixEmptyTarget, false, "STOPMACRO") then
             return true
         end
     end
@@ -3826,7 +4373,7 @@ function CleveRoids.DoSkipMacro(msg)
     -- PERFORMANCE: Use numeric iteration to avoid pairs() iterator allocation
     local parts = CleveRoids.splitStringIgnoringQuotes(CleveRoids.Trim(msg))
     for i = 1, table.getn(parts) do
-        if CleveRoids.DoWithConditionals(parts[i], nil, nil, false, "SKIPMACRO") then
+        if CleveRoids.DoWithConditionals(parts[i], nil, CleveRoids.FixEmptyTarget, false, "SKIPMACRO") then
             return true
         end
     end
@@ -4032,13 +4579,11 @@ local GetTime = GetTime
 local UnitAffectingCombat = UnitAffectingCombat
 local pairs = pairs
 local next = next
-local UnitPosition = UnitPosition
 local IsAltKeyDown = IsAltKeyDown
 local IsShiftKeyDown = IsShiftKeyDown
 local IsControlKeyDown = IsControlKeyDown
 
 -- PERFORMANCE: Module-level constants (avoid re-creation per frame)
-local POS_TRACK_INTERVAL = 0.01  -- 10ms between position samples (100 Hz, matches MonkeySpeed)
 local SEQUENCE_STALE_TIME = 300  -- 5 minutes
 
 function CleveRoids.OnUpdate(self)
@@ -4065,6 +4610,17 @@ function CleveRoids.OnUpdate(self)
     -- PERFORMANCE: Single GetTime() call per frame
     local time = GetTime()
 
+    -- Coalesced macro/spell/action-bar rebuild (armed by UPDATE_MACROS,
+    -- SPELLS_CHANGED and PLAYER_LOGIN). Debounced so the login burst -
+    -- SPELLS_CHANGED fires several times as the spellbook populates - collapses
+    -- into a single rebuild. Runs even before `ready` so spells/talents are
+    -- indexed before the init timer's first action-bar pass; RebuildMacros
+    -- itself skips the 120-slot action-bar rebuild until ready.
+    if CR.macroRebuildTime and time >= CR.macroRebuildTime then
+        CR.macroRebuildTime = nil
+        CR.RebuildMacros()
+    end
+
     -- PERFORMANCE: Early exit if not ready (before any other checks)
     if not CR.ready then
         -- Handle initialization timer only when not ready
@@ -4085,6 +4641,12 @@ function CleveRoids.OnUpdate(self)
             CR._suppressActionHandlers = false
 
             CR.TestForAllActiveActions()
+
+            -- First publish of the session. Deferred to here rather than done at
+            -- load because SetMacroDisplay returns false until the player exists
+            -- in the world.
+            CR.PublishAllDisplays()
+
             CR.lastUpdate = time
 
             -- FIX: Force refresh ALL Blizzard action buttons after initialization
@@ -4103,65 +4665,21 @@ function CleveRoids.OnUpdate(self)
         return
     end
 
-    -- =========================================================================
-    -- CONTINUOUS POSITION TRACKING (for [moving] fallback without MonkeySpeed)
-    -- =========================================================================
-    -- Track player position at ~100 Hz with 4-sample circular buffer for snappy movement detection.
-    -- Matches MonkeySpeed's 0.01s detection interval for similar responsiveness.
-    -- PERFORMANCE: Pre-allocated circular buffer eliminates ~100 table allocs/sec and table.remove shifting.
-    local lastPosTime = CR._positionTrackTime or 0
-
-    if (time - lastPosTime) >= POS_TRACK_INTERVAL then
-        CR._positionTrackTime = time
-
-        if UnitPosition then
-            local x, y = UnitPosition("player")
-            if x and y then
-                -- Initialize circular buffer if needed (pre-allocate 4 entry tables)
-                local history = CR._positionHistory
-                if not history then
-                    history = {
-                        { x = 0, y = 0, time = 0 },
-                        { x = 0, y = 0, time = 0 },
-                        { x = 0, y = 0, time = 0 },
-                        { x = 0, y = 0, time = 0 },
-                    }
-                    CR._positionHistory = history
-                    CR._posHistoryIndex = 0
-                    CR._posHistoryCount = 0
-                end
-
-                -- Advance circular index (1-based, wraps at 4)
-                local idx = CR._posHistoryIndex + 1
-                if idx > 4 then idx = 1 end
-                CR._posHistoryIndex = idx
-
-                -- Reuse existing entry (zero allocation)
-                local entry = history[idx]
-                entry.x = x
-                entry.y = y
-                entry.time = time
-
-                -- Track how many samples we have (caps at 4)
-                if CR._posHistoryCount < 4 then
-                    CR._posHistoryCount = CR._posHistoryCount + 1
-                end
-
-                -- Maintain legacy vars for any code that uses them directly
-                if CR._posHistoryCount >= 2 then
-                    local prevIdx = idx - 1
-                    if prevIdx < 1 then prevIdx = 4 end
-                    CR._previousPlayerPos = history[prevIdx]
-                    CR._currentPlayerPos = entry
-                end
-            end
+    -- Coalesced re-index after async item data arrives (GET_ITEM_INFO_RECEIVED).
+    -- ClassicAPI warms the item cache asynchronously, so items that were still
+    -- uncached during an earlier index pass land here once their
+    -- SMSG_ITEM_QUERY_SINGLE response resolves. Bursts are debounced into one
+    -- re-index via CR.itemInfoReindexTime (armed by the event handler).
+    if CR.itemInfoReindexTime and time >= CR.itemInfoReindexTime then
+        CR.itemInfoReindexTime = nil
+        -- In combat: drop it; PLAYER_LEAVE_COMBAT does a full re-index once safe.
+        if not UnitAffectingCombat("player") then
+            CR.lastItemIndexTime = GetTime()
+            CR.IndexItems()
+            CR.Actions = {}
+            CR.Macros = {}
+            CR.IndexActionBars()
         end
-    end
-
-    -- PERFORMANCE: Delayed WDB warmup after login (ensures GetItemInfo works after WDB clear)
-    if CR.wdbWarmupTime and time >= CR.wdbWarmupTime then
-        CR.wdbWarmupTime = nil
-        CR.DoWDBWarmup()
     end
 
     -- PERFORMANCE: Cache refresh rate calculation (avoid per-frame division)
@@ -4182,23 +4700,15 @@ function CleveRoids.OnUpdate(self)
 
     CR.lastUpdate = time
 
-    -- Process deferred equipment index updates (for throttled UNIT_INVENTORY_CHANGED)
-    -- PERFORMANCE: Skip check entirely if no pending update
-    local pendingTime = CR.equipIndexPendingTime
-    if pendingTime and not UnitAffectingCombat("player") then
-        if (time - (CR.lastEquipIndexTime or 0)) >= 0.2 then
-            CR.lastEquipIndexTime = time
-            CR.equipIndexPendingTime = nil
-            CR.lastItemIndexTime = time
-            CR.IndexItems()
-            CR.Actions = {}
-            CR.Macros = {}
-            CR.IndexActionBars()
-
-            if CRM.realtime == 0 then
-                CR.QueueActionUpdate()
-            end
-        end
+    -- LeafVillageAchievements/Legends also hook SendChatMessage and can bump ours
+    -- off the top of the chain (orphaning it / decorating #showtooltip). Reclaim
+    -- the top when they're present so #showtooltip stays filtered.
+    if not CR._watchChatHooks then
+        CR._watchChatHooks = (C_AddOns.IsAddOnLoaded("LeafVillageAchievements")
+                or C_AddOns.IsAddOnLoaded("LeafVillageLegends"))
+    end
+    if CR._watchChatHooks then
+        CR.EnsureSendChatMessageHook()
     end
 
     -- PERFORMANCE: Check for expired reactive procs only if we have any
@@ -4253,6 +4763,21 @@ function CleveRoids.OnUpdate(self)
         end
     end
 
+    -- A totem's timer runs down with nothing behind it: PLAYER_TOTEM_UPDATE fires
+    -- when a slot changes hands, never as one counts toward zero, so a
+    -- [totem:X<N] icon would hold the answer from its last refresh until some
+    -- unrelated event queued another. Unlike an aura, there is no ambient event
+    -- stream to ride -- UNIT_AURA is what quietly keeps [mybuff:X<N] honest -- so
+    -- a re-test once a second while any totem timer runs is the whole mechanism.
+    -- Only the icon is at stake: the click path evaluates conditionals live.
+    -- Realtime mode re-tests everything each tick and needs none of this.
+    if CRM.realtime == 0 and time >= (CR.nextTotemPoll or 0) then
+        CR.nextTotemPoll = time + 1
+        if CR.AnyTotemTimerRunning() then
+            CR.isActionUpdateQueued = true
+        end
+    end
+
     -- Check the saved variable to decide which update mode to use.
     if CRM.realtime == 1 then
         -- Realtime Mode: Force an update on every throttled tick for maximum responsiveness.
@@ -4292,38 +4817,36 @@ function CleveRoids.OnUpdate(self)
         guid, cast = nextGuid, nextGuid and spell_tracking[nextGuid]
     end
 
-    -- Clean stale castTracking entries (standalone mode only, pfUI 7.6 manages its own)
-    if not CR.hasPfUI76 then
-        local ct = CR.castTracking
-        local ctGuid, ctEntry = next(ct)
-        while ctGuid do
-            local nextCtGuid = next(ct, ctGuid)
-            if ctEntry.endTime and time > ctEntry.endTime + 0.5 then
+    -- Clean stale castTracking entries. Instant casts are stored with endTime = nil
+    -- (SPELL_START sets it only when the cast has a duration), so an endTime-only
+    -- check could never evict them and every instant cast by every unit in range
+    -- accumulated forever. Fall back to startTime for those: the matching SPELL_GO
+    -- lands within a frame or two, so anything still here after the grace period is
+    -- an entry whose completion we never observed.
+    local ct = CR.castTracking
+    local ctGuid, ctEntry = next(ct)
+    while ctGuid do
+        local nextCtGuid = next(ct, ctGuid)
+        if ctEntry then
+            if ctEntry.endTime then
+                if time > ctEntry.endTime + 0.5 then
+                    ct[ctGuid] = nil
+                end
+            elseif ctEntry.startTime and time > ctEntry.startTime + 1 then
+                -- No endTime: an instant cast. Its SPELL_GO lands within a frame or
+                -- two, so a second is generous, and anything older is an entry whose
+                -- completion we never saw.
                 ct[ctGuid] = nil
             end
-            ctGuid = nextCtGuid
-            ctEntry = nextCtGuid and ct[nextCtGuid]
         end
+        ctGuid = nextCtGuid
+        ctEntry = nextCtGuid and ct[nextCtGuid]
     end
 
     -- PERFORMANCE OPTIMIZATION: Run memory cleanup less frequently (every 5 seconds instead of every frame)
     -- This reduces CPU usage while maintaining effective memory management
     if (time - CR.lastCleanupTime) >= CR.CLEANUP_INTERVAL then
         CR.lastCleanupTime = time
-
-        -- MEMORY: Clean up carnageDurationOverrides older than 30 seconds
-        -- PERFORMANCE: Use next() directly instead of pairs() to avoid iterator allocation
-        local carnageOverrides = CR.carnageDurationOverrides
-        if carnageOverrides then
-            local spellID, data = next(carnageOverrides)
-            while spellID do
-                local nextID = next(carnageOverrides, spellID)
-                if data.timestamp and (time - data.timestamp) > 30 then
-                    carnageOverrides[spellID] = nil
-                end
-                spellID, data = nextID, nextID and carnageOverrides[nextID]
-            end
-        end
 
         -- MEMORY: Clean up old ComboPointTracking entries (older than 60 seconds)
         -- PERFORMANCE: Use next() directly instead of pairs() to avoid iterator allocation
@@ -4372,114 +4895,8 @@ function CleveRoids.OnUpdate(self)
     end
 end
 
--- Initialize the nested table for the GameTooltip hooks if it doesn't exist
-if not CleveRoids.Hooks.GameTooltip then CleveRoids.Hooks.GameTooltip = {} end
-
--- Save the original GameTooltip.SetAction function before we override it
-CleveRoids.Hooks.GameTooltip.SetAction = GameTooltip.SetAction
-
--- Now, define our custom version of the function
-function GameTooltip.SetAction(self, slot)
-    if not slot then return end
-    local actions = CleveRoids.GetAction(slot)
-
-    -- If this is our macro but has no active action, show just the macro name
-    if actions and not actions.active then
-        local macroName = GetActionText(slot)
-        if macroName then
-            GameTooltip:SetText(macroName)
-            GameTooltip:Show()
-            return
-        end
-    end
-
-    local action_to_display_info = nil
-    if actions then
-        -- Only show spell/item tooltip when there's an active action
-        if actions.active then
-            action_to_display_info = actions.active
-        end
-    end
-
-    if action_to_display_info and action_to_display_info.action then
-        local action_name = action_to_display_info.action
-
-        -- NEW: Check if action is a slot ID for tooltip
-        local slotId = tonumber(action_name)
-        if slotId and slotId >= 1 and slotId <= 19 then
-            -- Use the more specific SetInventoryItem function to prevent conflicts with other addons.
-            GameTooltip:SetInventoryItem("player", slotId)
-            GameTooltip:Show()
-            return
-        end
-        -- End new logic
-
-        local current_spell_data = CleveRoids.GetSpell(action_name)
-        if current_spell_data then
-            GameTooltip:SetSpell(current_spell_data.spellSlot, current_spell_data.bookType)
-            local rank_info = current_spell_data.rank or (current_spell_data.highest and current_spell_data.highest.rank)
-            if rank_info and rank_info ~= "" then
-                GameTooltipTextRight1:SetText("|cff808080" .. rank_info .. "|r")
-            else
-                GameTooltipTextRight1:SetText("")
-            end
-            GameTooltipTextRight1:Show()
-            GameTooltip:Show()
-            return
-        end
-
-        local current_item_data = CleveRoids.GetItem(action_name)
-        if current_item_data then
-            -- Use specific functions based on where the item is located.
-            if current_item_data.inventoryID then
-                GameTooltip:SetInventoryItem("player", current_item_data.inventoryID)
-            elseif current_item_data.bagID and current_item_data.slot then
-                GameTooltip:SetBagItem(current_item_data.bagID, current_item_data.slot)
-            else
-                -- Fallback to the original method if location is unknown.
-                GameTooltip:SetHyperlink(current_item_data.link)
-            end
-            GameTooltip:Show()
-            return
-        end
-
-        if action_to_display_info.macro and type(action_to_display_info.macro) == "table" then
-            local nested_action_info = action_to_display_info.macro
-            local nested_action_name = nested_action_info.action
-
-            current_spell_data = CleveRoids.GetSpell(nested_action_name)
-            if current_spell_data then
-                GameTooltip:SetSpell(current_spell_data.spellSlot, current_spell_data.bookType)
-                local rank_info = current_spell_data.rank or (current_spell_data.highest and current_spell_data.highest.rank)
-                if rank_info and rank_info ~= "" then
-                    GameTooltipTextRight1:SetText("|cff808080" .. rank_info .. "|r")
-                else
-                    GameTooltipTextRight1:SetText("")
-                end
-                GameTooltipTextRight1:Show()
-                GameTooltip:Show()
-                return
-            end
-
-            current_item_data = CleveRoids.GetItem(nested_action_name)
-            if current_item_data then
-                 if current_item_data.inventoryID then
-                    GameTooltip:SetInventoryItem("player", current_item_data.inventoryID)
-                elseif current_item_data.bagID and current_item_data.slot then
-                    GameTooltip:SetBagItem(current_item_data.bagID, current_item_data.slot)
-                else
-                    GameTooltip:SetHyperlink(current_item_data.link)
-                end
-                GameTooltip:Show()
-                return
-            end
-        end
-    end
-
-    -- If none of our custom logic handled it, call the original function we saved earlier.
-    CleveRoids.Hooks.GameTooltip.SetAction(self, slot)
-end
-
+-- Not a display override: this invalidates our per-slot caches when an action is
+-- dragged off a slot, so it stays regardless of who draws the button.
 CleveRoids.Hooks.PickupAction = PickupAction
 function PickupAction(slot)
     if not slot then return end
@@ -4489,489 +4906,26 @@ function PickupAction(slot)
     return CleveRoids.Hooks.PickupAction(slot)
 end
 
-CleveRoids.Hooks.ActionHasRange = ActionHasRange
-function ActionHasRange(slot)
-    if not slot then return nil end
-    local actions = CleveRoids.GetAction(slot)
-    -- Only override for our macros with #showtooltip
-    if actions and actions.tooltip then
-        -- If we have an active action with valid range data, use it
-        if actions.active then
-            if actions.active.inRange ~= -1 then
-                return 1  -- Has range check with valid data
-            else
-                -- For channeled spells (inRange == -1), try proxy slot lookup
-                local spellName = actions.active.spell and actions.active.spell.name
-                local proxySlot = spellName and CleveRoids.GetProxyActionSlot(spellName)
-                if proxySlot then
-                    return CleveRoids.Hooks.ActionHasRange(proxySlot)
-                end
-            end
-        end
-        -- FIX: Even without actions.active, if the macro has potential spell actions,
-        -- return 1 to ensure pfUI calls IsActionInRange (which will do proper checks)
-        -- This fixes Super macros where actions.active might not be populated yet
-        if actions.tooltip.spell or actions.tooltip.type == "spell" then
-            return 1  -- Tooltip is a spell - has range
-        end
-        -- Check if any action in the list is a spell
-        if actions.list then
-            for i = 1, table.getn(actions.list) do
-                local action = actions.list[i]
-                if action and (action.spell or action.type == "spell") then
-                    return 1  -- Has at least one spell action
-                end
-            end
-        end
-    end
-    -- Not a macro we're tracking - pass through to original
-    return CleveRoids.Hooks.ActionHasRange(slot)
-end
-
-CleveRoids.Hooks.IsActionInRange = IsActionInRange
-function IsActionInRange(slot, unit)
-    if not slot then return nil end
-    local actions = CleveRoids.GetAction(slot)
-    -- Only override for our macros with #showtooltip
-    if actions and actions.tooltip then
-        -- If we have an active spell action, use its range data
-        if actions.active and actions.active.type == "spell" then
-            if actions.active.inRange ~= -1 then
-                return actions.active.inRange
-            else
-                -- For channeled spells (inRange == -1), try proxy slot lookup
-                local spellName = actions.active.spell and actions.active.spell.name
-                local proxySlot = spellName and CleveRoids.GetProxyActionSlot(spellName)
-                if proxySlot then
-                    return CleveRoids.Hooks.IsActionInRange(proxySlot, unit)
-                end
-            end
-        end
-        -- FIX: If no active action but macro has tooltip spell, check its range directly
-        -- This ensures range coloring works even when actions.active hasn't been populated
-        if not actions.active and actions.tooltip.spell then
-            local spell = actions.tooltip.spell
-            local spellName = spell.name
-            if spellName and IsSpellInRange then
-                local targetUnit = unit or "target"
-                if UnitExists(targetUnit) then
-                    -- FIX: Wrap in pcall - spell might not be in spellbook (items, other class spells, etc.)
-                    local ok, result = pcall(IsSpellInRange, spellName, targetUnit)
-                    if ok then
-                        if result == 0 then
-                            return 0  -- Out of range
-                        elseif result == 1 then
-                            return 1  -- In range
-                        end
-                    end
-                end
-            end
-            -- Try proxy slot as fallback
-            local proxySlot = spellName and CleveRoids.GetProxyActionSlot(spellName)
-            if proxySlot then
-                return CleveRoids.Hooks.IsActionInRange(proxySlot, unit)
-            end
-        end
-    end
-    -- Not a macro we're tracking - pass through to original
-    return CleveRoids.Hooks.IsActionInRange(slot, unit)
-end
-
+-- These two aliases outlived the overrides they were saved for: ClassicAPI now
+-- draws the buttons, but callers still need the unmodified globals, which is all
+-- these names are now. IsReactiveUsable (Conditionals.lua) reads the raw usable
+-- state of a proxy slot; DeferStopAttack and the auto-attack drift check read the
+-- true current-action state, which the old override could not report because it
+-- only echoed our cached flag.
 CleveRoids.Hooks.OriginalIsUsableAction = IsUsableAction
-CleveRoids.Hooks.IsUsableAction = IsUsableAction
-function IsUsableAction(slot, unit)
-    if not slot then return nil, nil end
-    local actions = CleveRoids.GetAction(slot)
-
-    -- If this is one of our macros AND it uses #showtooltip
-    if actions and actions.tooltip then
-        -- IMPORTANT: Only override usability when #showtooltip is present
-        -- Macros without #showtooltip should use default game behavior
-        if actions.active then
-            -- We have an active action - return its usable state
-            -- FIX: Convert oom boolean to number (1/nil) for Blizzard's button code
-            local oomValue = actions.active.oom and 1 or nil
-            return actions.active.usable, oomValue
-        else
-            -- FIX: If no active action but tooltip has a spell, check its usability directly
-            -- This ensures usability coloring works even when actions.active hasn't been populated
-            if actions.tooltip.spell then
-                local spell = actions.tooltip.spell
-                local spellName = spell.name
-                if spellName and IsSpellUsable then
-                    -- FIX: Wrap in pcall - spell might not be in spellbook (items, other class spells, etc.)
-                    local ok, usable, notEnoughMana = pcall(IsSpellUsable, spellName)
-                    if ok then
-                        if usable == 1 then
-                            return 1, nil  -- Usable
-                        elseif notEnoughMana == 1 then
-                            return nil, 1  -- Out of mana
-                        else
-                            return nil, nil  -- Not usable (wrong stance, etc.)
-                        end
-                    end
-                end
-                -- Fallback: check if spell has a cost and compare to current mana
-                if spell.cost and spell.cost > 0 then
-                    local currentMana = UnitMana("player")
-                    if currentMana < spell.cost then
-                        return nil, 1  -- Out of mana
-                    end
-                end
-                -- Default to usable if we can't determine otherwise
-                return 1, nil
-            elseif actions.tooltip.item then
-                -- FIX: Handle item tooltips - items are always usable unless on cooldown
-                -- The cooldown is handled separately by GetActionCooldown hook
-                return 1, nil
-            end
-            -- No tooltip spell or item - this macro's conditionals all failed
-            -- Return nil to make the icon dark
-            return nil, nil
-        end
-    else
-        -- Not our macro OR no #showtooltip - use game's default behavior
-        return CleveRoids.Hooks.IsUsableAction(slot, unit)
-    end
-end
-
 CleveRoids.Hooks.IsCurrentAction = IsCurrentAction
-function IsCurrentAction(slot)
-    if not slot then return nil end
-    local actions = CleveRoids.GetAction(slot)
 
-    -- When no action is active (all conditionals failed), don't check tooltip's "current" status
-    if actions and not actions.active and not actions.explicitTooltip and actions.list and table.getn(actions.list) > 0 then
-        return CleveRoids.Hooks.IsCurrentAction(slot)
+local function IsAutoAttackSpell(spell)
+    if not spell then return false end
+    if C_Spell and C_Spell.IsAutoAttackSpell and spell.id then
+        return C_Spell.IsAutoAttackSpell(spell.id)
     end
-
-    -- Use the same priority as GetActionTexture: active first, then tooltip
-    local actionToCheck = (actions and actions.active) or (actions and actions.tooltip)
-
-    if not actionToCheck then
-        return CleveRoids.Hooks.IsCurrentAction(slot)
-    else
-        local name
-        if actionToCheck.spell then
-            local rank = actionToCheck.spell.rank or actionToCheck.spell.highest.rank
-            name = actionToCheck.spell.name..(rank and ("("..rank..")"))
-
-            -- Check if this spell is currently queued or being cast via Nampower
-            -- Get spell ID for comparison
-            local spellId = actionToCheck.spell.id
-            if not spellId and GetSpellIdForName then
-                spellId = GetSpellIdForName(name)
-            end
-
-            if spellId then
-                -- Prefer GetCastInfo (Nampower 2.18+) for cleaner API
-                if GetCastInfo then
-                    local ok, info = pcall(GetCastInfo)
-                    if ok and info and info.spellId == spellId then
-                        -- Spell is actively being cast/channeled
-                        return true
-                    end
-                end
-
-                -- Also check GetCurrentCastingInfo for queued spell detection
-                if GetCurrentCastingInfo then
-                    local castId, visId, autoId, casting, channeling = GetCurrentCastingInfo()
-
-                    -- Show glow if actively casting/channeling this spell
-                    if (casting == 1 and castId == spellId) or (channeling == 1 and visId == spellId) then
-                        return true
-                    end
-                    -- Show glow if this spell is queued (castId set but not yet casting)
-                    if casting == 0 and channeling == 0 and castId == spellId then
-                        return true
-                    end
-                end
-            end
-        elseif actionToCheck.item then
-            name = actionToCheck.item.name
-        end
-
-        return CleveRoids.Hooks.IsCurrentAction(CleveRoids.GetProxyActionSlot(name) or slot)
+    if C_SpellBook and C_SpellBook.IsAutoAttackSpellBookItem and spell.spellSlot then
+        return C_SpellBook.IsAutoAttackSpellBookItem(spell.spellSlot, spell.bookType)
     end
+    return false
 end
-
-CleveRoids.Hooks.GetActionTexture = GetActionTexture
-function GetActionTexture(slot)
-    if not slot then return nil end
-    local actions = CleveRoids.GetAction(slot)
-
-    -- Check if this is one of our macros
-    if actions and (actions.active or actions.tooltip) then
-
-        -- This block handles the case where all conditionals fail and no explicit
-        -- #showtooltip was set. It defaults to the macro's chosen icon.
-        if not actions.active and not actions.explicitTooltip and actions.list and table.getn(actions.list) > 0 then
-            -- Get the macro's own icon as fallback
-            local macroTexture = nil
-            local macroName = GetActionText(slot)
-            if macroName then
-                local macroID = GetMacroIndexByName(macroName)
-                if macroID and macroID > 0 then
-                    local _, texture = GetMacroInfo(macroID)
-                    macroTexture = texture
-                end
-            end
-
-            -- When no conditionals pass, use macro icon (not first action's icon)
-            -- The actions.tooltip is just the first action which didn't pass conditionals
-            if macroTexture then
-                return macroTexture
-            end
-
-            -- Should never reach here, but return unknown as last resort
-            return CleveRoids.unknownTexture
-        end
-
-        -- Prioritize active action, fall back to tooltip
-        local a = actions.active or actions.tooltip
-
-        -- Handle numeric slot actions (e.g., /use 13)
-        local slotId = tonumber(a.action)
-        if slotId and slotId >= 1 and slotId <= 19 then
-            local currentTexture = GetInventoryItemTexture("player", slotId)
-            if currentTexture then
-                return currentTexture
-            end
-
-            -- Slot is empty, fall back to macro icon
-            local macroName = GetActionText(slot)
-            if macroName then
-                local macroID = GetMacroIndexByName(macroName)
-                if macroID and macroID > 0 then
-                    local _, macroTexture = GetMacroInfo(macroID)
-                    if macroTexture then
-                        return macroTexture
-                    end
-                end
-            end
-            return CleveRoids.unknownTexture
-        end
-
-        -- *** THIS IS THE FIX ***
-        -- If an action is active, return its texture directly.
-        -- If no action is active, return the tooltip's texture.
-        -- If neither has a texture, fall back to the macro's icon.
-        local texture = (actions.active and actions.active.texture) or (actions.tooltip and actions.tooltip.texture)
-
-        -- Check if this is a shapeshift form spell and use active texture if toggled on
-        if a and a.spell and a.action then
-            -- Strip rank info and underscores from spell name for comparison
-            local spellName = string.gsub(a.action, "%s*%(.-%)%s*$", "")
-            spellName = string.gsub(spellName, "_", " ")
-            -- Check all shapeshift forms to see if this spell matches and is active
-            for i = 1, GetNumShapeshiftForms() do
-                local icon, name, isActive, isCastable = GetShapeshiftFormInfo(i)
-                if name and string.lower(name) == string.lower(spellName) and isActive and icon then
-                    texture = icon
-                    break
-                end
-            end
-        end
-
-        -- Check if this is a toggled buff ability (Prowl, Shadowmeld) and swap icon based on buff state
-        -- Note: Stealth is handled above by shapeshift form logic
-        if a and a.spell and a.action then
-            local spellName = string.gsub(a.action, "%s*%(.-%)%s*$", "")
-            spellName = string.gsub(spellName, "_", " ")
-
-            -- Check if this is one of our toggled buff abilities (not shapeshift forms)
-            local toggledAbilities = {
-                [CleveRoids.Localized.Spells["Prowl"]] = true,
-                [CleveRoids.Localized.Spells["Shadowmeld"]] = true,
-            }
-
-            if toggledAbilities[spellName] then
-                -- Check if the buff is active
-                if CleveRoids.ValidatePlayerBuff(spellName) then
-                    -- Buff is active, use the active texture from auraTextures
-                    local activeTexture = CleveRoids.auraTextures[spellName]
-                    if activeTexture then
-                        texture = activeTexture
-                    end
-                end
-            end
-        end
-
-        if texture then
-            return texture
-        end
-
-        -- Final fallback: get the macro's icon
-        local macroName = GetActionText(slot)
-        if macroName then
-            local macroID = GetMacroIndexByName(macroName)
-            if macroID and macroID > 0 then
-                local _, macroTexture = GetMacroInfo(macroID)
-                if macroTexture then
-                    return macroTexture
-                end
-            end
-        end
-
-        -- Should never reach here
-        return CleveRoids.unknownTexture
-
-    end
-
-    -- Not one of our macros, use the original function
-    return CleveRoids.Hooks.GetActionTexture(slot)
-end
-
--- TODO: Look into https://github.com/Stanzilla/WoWUIBugs/issues/47 if needed
-CleveRoids.Hooks.GetActionCooldown = GetActionCooldown
-function GetActionCooldown(slot)
-    -- Guard against nil/invalid slot
-    if not slot then return 0, 0, 0 end
-
-    local actions = CleveRoids.GetAction(slot)
-    -- Check for actions.active OR actions.tooltip
-    if actions and (actions.active or actions.tooltip) then
-
-        -- When no action is active (all conditionals failed) but tooltip exists from #showtooltip,
-        -- don't show the tooltip's cooldown - fall back to the original function (no cooldown)
-        -- This matches the icon behavior in GetActionTexture (lines 3958-3977)
-        if not actions.active and not actions.explicitTooltip and actions.list and table.getn(actions.list) > 0 then
-            return CleveRoids.Hooks.GetActionCooldown(slot)
-        end
-
-        -- Prioritize the active action, but fall back to the tooltip action
-        local a = actions.active or actions.tooltip
-
-        local slotId = tonumber(a.action)
-        if slotId and slotId >= 1 and slotId <= 19 then
-            return GetInventoryItemCooldown("player", slotId)
-        end
-
-        if a.spell then
-            return GetSpellCooldown(a.spell.spellSlot, a.spell.bookType)
-        elseif a.item then
-            if a.item.bagID and a.item.slot then
-                return GetContainerItemCooldown(a.item.bagID, a.item.slot)
-            elseif a.item.inventoryID then
-                return GetInventoryItemCooldown("player", a.item.inventoryID)
-            end
-        end
-
-        -- DEBUG: Log when we fall through without finding spell/item data (once per slot)
-        if CleveRoids.cooldownDebug and not CleveRoids.cooldownDebugLogged[slot] then
-            CleveRoids.cooldownDebugLogged[slot] = true
-            DEFAULT_CHAT_FRAME:AddMessage(string.format(
-                "|cffff0000[CD Issue]|r Slot %d: No cooldown data! action='%s' type=%s spell=%s item=%s",
-                slot,
-                tostring(a.action),
-                tostring(a.type),
-                tostring(a.spell ~= nil),
-                tostring(a.item ~= nil)
-            ))
-            DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[CD Issue]|r This slot will show incorrect cooldown. Report macro text to developer.")
-        end
-
-        -- Fallback to original function (preserves SuperWoW's #showtooltip handling)
-        return CleveRoids.Hooks.GetActionCooldown(slot)
-    else
-        return CleveRoids.Hooks.GetActionCooldown(slot)
-    end
-end
-
-CleveRoids.Hooks.GetActionCount = GetActionCount
-function GetActionCount(slot)
-    -- Guard against nil/invalid slot
-    if not slot then return 0 end
-
-    local action = CleveRoids.GetAction(slot)
-    local count
-
-    -- When no action is active (all conditionals failed), don't show tooltip's count
-    if action and not action.active and not action.explicitTooltip and action.list and table.getn(action.list) > 0 then
-        return CleveRoids.Hooks.GetActionCount(slot)
-    end
-
-    -- Use the same priority as GetActionTexture: active first, then tooltip
-    local actionToCheck = (action and action.active) or (action and action.tooltip)
-    if actionToCheck then
-
-        local slotId = tonumber(actionToCheck.action)
-        if slotId and slotId >= 1 and slotId <= 19 then
-            return GetInventoryItemCount("player", slotId)
-        end
-
-        if actionToCheck.item then
-            count = CleveRoids.GetLiveItemCount(actionToCheck.item.name or actionToCheck.action)
-
-        elseif actionToCheck.spell then
-            local reagent = actionToCheck.spell.reagent
-            if not reagent or reagent == "" then
-                reagent = nil
-                local ss, bt = actionToCheck.spell.spellSlot, actionToCheck.spell.bookType
-                if ss and bt then
-                    local _, r = CleveRoids.GetSpellCost(ss, bt)
-                    reagent = r
-                end
-                if (not reagent) and _ReagentBySpell and actionToCheck.spell.name then
-                    reagent = _ReagentBySpell[actionToCheck.spell.name]  -- e.g., Vanish → Flash Powder
-                end
-                actionToCheck.spell.reagent = reagent  -- cache it so we don't re-scan every frame
-            end
-            if reagent and reagent ~= "" then
-                count = CleveRoids.GetReagentCount(reagent)  -- id-first bag scan, falls back to name/tooltip
-            end
-        end
-    end
-
-    return count or CleveRoids.Hooks.GetActionCount(slot)
-end
-
-CleveRoids.Hooks.IsConsumableAction = IsConsumableAction
-function IsConsumableAction(slot)
-    -- Guard against nil/invalid slot
-    if not slot then return nil end
-
-    local action = CleveRoids.GetAction(slot)
-
-    -- When no action is active (all conditionals failed), don't show tooltip's consumable status
-    if action and not action.active and not action.explicitTooltip and action.list and table.getn(action.list) > 0 then
-        return CleveRoids.Hooks.IsConsumableAction(slot)
-    end
-
-    -- Use the same priority as GetActionTexture: active first, then tooltip
-    local actionToCheck = (action and action.active) or (action and action.tooltip)
-    if actionToCheck then
-
-        local slotId = tonumber(actionToCheck.action)
-        if slotId and slotId >= 1 and slotId <= 19 then
-            local _, count = GetInventoryItemCount("player", slotId)
-            if count and count > 0 then return 1 end
-        end
-
-        if actionToCheck.item and
-            (CleveRoids.countedItemTypes[actionToCheck.item.type]
-            or CleveRoids.countedItemTypes[actionToCheck.item.name])
-        then
-            return 1
-        end
-
-
-        if actionToCheck.spell then
-            local reagent = actionToCheck.spell.reagent
-            if (not reagent or reagent == "") and actionToCheck.spell.name then
-                reagent = _ReagentBySpell[actionToCheck.spell.name]
-                if reagent then
-                    actionToCheck.spell.reagent = reagent
-                end
-            end
-            if reagent and reagent ~= "" then
-                return 1
-            end
-        end
-    end
-
-    return CleveRoids.Hooks.IsConsumableAction(slot)
-end
+CleveRoids.IsAutoAttackSpell = IsAutoAttackSpell
 
 -- ============================================================================
 -- RunMacro Hook - Use our own macro execution system
@@ -5036,51 +4990,18 @@ if not CleveRoids.RunMacroHooked then
     CleveRoids.RunMacroHooked = true
 end
 
--- Create a hidden tooltip frame to read buff names
-if not AuraScanTooltip and not CleveRoids.hasSuperwow then
-    CreateFrame("GameTooltip", "AuraScanTooltip")
-    AuraScanTooltip:SetOwner(WorldFrame, "ANCHOR_NONE")
-    AuraScanTooltip:EnableMouse(false)
-    AuraScanTooltip:AddFontStrings(
-        AuraScanTooltip:CreateFontString("$parentTextLeft1", nil, "GameTooltipText"),
-        AuraScanTooltip:CreateFontString("$parentTextRight1", nil, "GameTooltipText")
-    )
-end
-
--- Robust named tooltip for scanning spells/items
-if not CleveRoidsTooltipScan then
-  -- Try to create with the standard template first
-  local ok, _ = pcall(CreateFrame, "GameTooltip", "CleveRoidsTooltipScan", UIParent, "GameTooltipTemplate")
-  if not ok or not CleveRoidsTooltipScan then
-    -- Fallback: manual tooltip with plenty of prebuilt lines
-    CleveRoidsTooltipScan = CreateFrame("GameTooltip", "CleveRoidsTooltipScan", UIParent)
-    local L1 = CleveRoidsTooltipScan:CreateFontString("$parentTextLeft1",  nil, "GameTooltipText")
-    local R1 = CleveRoidsTooltipScan:CreateFontString("$parentTextRight1", nil, "GameTooltipText")
-    CleveRoidsTooltipScan:AddFontStrings(L1, R1)
-    for i = 2, 32 do
-      CleveRoidsTooltipScan:CreateFontString("$parentTextLeft"..i,  nil, "GameTooltipText")
-      CleveRoidsTooltipScan:CreateFontString("$parentTextRight"..i, nil, "GameTooltipText")
-    end
-  end
-  CleveRoidsTooltipScan:SetOwner(WorldFrame, "ANCHOR_NONE")
-  CleveRoidsTooltipScan:EnableMouse(false)
-end
-
--- This single dummy frame handles events AND serves as our tooltip scanner.
-CleveRoids.Frame = CreateFrame("GameTooltip")
-CleveRoids.Frame:EnableMouse(false)  -- Prevent tooltip from capturing mouse input
-
--- Create the extra font strings needed for other functions like GetSpellCost.
-CleveRoids.Frame.costFontString = CleveRoids.Frame:CreateFontString()
-CleveRoids.Frame.rangeFontString = CleveRoids.Frame:CreateFontString()
-CleveRoids.Frame.reagentFontString = CleveRoids.Frame:CreateFontString()
-CleveRoids.Frame:AddFontStrings(CleveRoids.Frame:CreateFontString(), CleveRoids.Frame:CreateFontString())
-CleveRoids.Frame:AddFontStrings(CleveRoids.Frame.costFontString, CleveRoids.Frame.rangeFontString)
-CleveRoids.Frame:AddFontStrings(CleveRoids.Frame:CreateFontString(), CleveRoids.Frame:CreateFontString())
-CleveRoids.Frame:AddFontStrings(CleveRoids.Frame.reagentFontString, CleveRoids.Frame:CreateFontString())
+-- This single frame drives the addon's event loop and OnUpdate. (Spell cost /
+-- reagent lookups now read Spell.dbc directly via ClassicAPI -- no tooltip scan.)
+CleveRoids.Frame = CreateFrame("Frame")
 
 CleveRoids.Frame:SetScript("OnUpdate", CleveRoids.OnUpdate)
-CleveRoids.Frame:SetScript("OnEvent", function(...)
+-- Declared with no parameters on purpose. In 1.12's Lua 5.0 a function written
+-- `function(...)` builds a fresh `arg` table on every single call, and this fires
+-- for all ~48 registered events -- including the UNIT_HEALTH / UNIT_AURA /
+-- UNIT_*_GUID power streams, which tick continuously for every unit in range. That
+-- was a table per event, purely as garbage: the handler reads the event globals
+-- (event, this, arg1..arg10), never the vararg.
+CleveRoids.Frame:SetScript("OnEvent", function()
     CleveRoids.Frame[event](this,arg1,arg2,arg3,arg4,arg5,arg6,arg7,arg8,arg9,arg10)
 end)
 
@@ -5097,9 +5018,11 @@ CleveRoids.Frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 CleveRoids.Frame:RegisterEvent("UPDATE_MACROS")
 CleveRoids.Frame:RegisterEvent("SPELLS_CHANGED")
 CleveRoids.Frame:RegisterEvent("ACTIONBAR_SLOT_CHANGED")
-CleveRoids.Frame:RegisterEvent("BAG_UPDATE")
-CleveRoids.Frame:RegisterEvent("UNIT_INVENTORY_CHANGED")
+CleveRoids.Frame:RegisterEvent("BAG_UPDATE_DELAYED")
+CleveRoids.Frame:RegisterEvent("GET_ITEM_INFO_RECEIVED")
+CleveRoids.Frame:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
 CleveRoids.Frame:RegisterEvent("UNIT_PET")
+CleveRoids.Frame:RegisterEvent("UNIT_HAPPINESS")
 
 -- == STATE CHANGE EVENT REGISTRATION (for performance) ==
 CleveRoids.Frame:RegisterEvent("PLAYER_TARGET_CHANGED")
@@ -5110,18 +5033,40 @@ CleveRoids.Frame:RegisterEvent("PLAYER_REGEN_DISABLED") -- Entered actual combat
 CleveRoids.Frame:RegisterEvent("PLAYER_REGEN_ENABLED")  -- Left actual combat (no threat)
 CleveRoids.Frame:RegisterEvent("UPDATE_SHAPESHIFT_FORM")
 CleveRoids.Frame:RegisterEvent("SPELL_UPDATE_COOLDOWN")
--- Use GUID events when available (v2.39+), fall back to standard per-token events
+CleveRoids.Frame:RegisterEvent("PLAYER_STARTED_MOVING")
+-- ClassicAPI loss-of-control (school-interrupt lockout) for [locked]/[nolocked].
+CleveRoids.Frame:RegisterEvent("LOSS_OF_CONTROL_ADDED")
+CleveRoids.Frame:RegisterEvent("LOSS_OF_CONTROL_UPDATE")
+-- The unit state streams that drive icon refresh: GUID events when Nampower
+-- provides them (v2.39+, one event per unit change rather than one per token),
+-- else the stock per-token events. These cannot become RegisterUnitEvent calls
+-- -- the handlers ignore the unit and refresh every macro, because a conditional
+-- may name any unit ([@party3,hp:<50], @focus, @mouseover), so narrowing the
+-- token set would leave those icons stale.
+local unitStreamEvents
 if CleveRoids.NampowerAPI.features.hasUnitGuidEvents then
-    CleveRoids.Frame:RegisterEvent("UNIT_AURA_GUID")
-    CleveRoids.Frame:RegisterEvent("UNIT_HEALTH_GUID")
-    CleveRoids.Frame:RegisterEvent("UNIT_MANA_GUID")
-    CleveRoids.Frame:RegisterEvent("UNIT_RAGE_GUID")
-    CleveRoids.Frame:RegisterEvent("UNIT_ENERGY_GUID")
+    unitStreamEvents = { "UNIT_AURA_GUID", "UNIT_HEALTH_GUID", "UNIT_MANA_GUID", "UNIT_RAGE_GUID", "UNIT_ENERGY_GUID" }
 else
-    CleveRoids.Frame:RegisterEvent("UNIT_AURA")
-    CleveRoids.Frame:RegisterEvent("UNIT_HEALTH")
-    CleveRoids.Frame:RegisterEvent("UNIT_POWER")
+    unitStreamEvents = { "UNIT_AURA", "UNIT_HEALTH", "UNIT_POWER" }
 end
+
+-- They do fire continuously for every unit in range, and in realtime mode their
+-- handlers do nothing at all: the OnUpdate refreshes on every throttled tick and
+-- QueueActionUpdate no-ops. Rather than pay a Lua dispatch per event to return
+-- early, drop the registrations entirely while realtime is on. Re-applied at
+-- VARIABLES_LOADED (when the saved value is first known) and whenever
+-- `/cleveroid realtime` flips it.
+function CleveRoids.ApplyUnitStreamEvents()
+    local eventDriven = not CleveRoidMacros or CleveRoidMacros.realtime == 0
+    for i = 1, table.getn(unitStreamEvents) do
+        if eventDriven then
+            CleveRoids.Frame:RegisterEvent(unitStreamEvents[i])
+        else
+            CleveRoids.Frame:UnregisterEvent(unitStreamEvents[i])
+        end
+    end
+end
+CleveRoids.ApplyUnitStreamEvents()
 if CleveRoids.hasSuperwow then
   CleveRoids.Frame:RegisterEvent("UNIT_CASTEVENT")
 end
@@ -5155,6 +5100,11 @@ if CleveRoids.NampowerAPI.features.hasKeyEvents then
     CleveRoids.Frame:RegisterEvent("KEY_UP")
 end
 
+-- ClassicAPI totem-bar tracking, for [totem:X] icon refresh. Ungated, unlike the
+-- Nampower features above: it long predates the ClassicAPI floor the addon
+-- already refuses to run below.
+CleveRoids.Frame:RegisterEvent("PLAYER_TOTEM_UPDATE")
+
 -- NOTE: SuperMacro hook installation is handled by Compatibility/SuperMacro.lua
 -- which has the complete implementation including the INTERCEPT path for all commands
 
@@ -5167,20 +5117,24 @@ function CleveRoids.Frame:UNIT_PET()
     end
 end
 
+function CleveRoids.Frame:UNIT_HAPPINESS()
+    if CleveRoidMacros.realtime == 0 then
+        CleveRoids.QueueActionUpdate()
+    end
+end
+
 -- Handle shutdown to prevent SuperWoW API crashes during logout
 function CleveRoids.Frame:PLAYER_LOGOUT()
     CleveRoids.isShuttingDown = true
     this:UnregisterAllEvents()
     this:SetScript("OnUpdate", nil)
     this:SetScript("OnEvent", nil)
-    -- Disarm UnitXP timers (they run in a separate thread and survive /reload)
-    if CleveRoids.hasUnitXP then
-        if CleveRoids._cleanupTimerId then
-            pcall(UnitXP, "timer", "disarm", CleveRoids._cleanupTimerId)
-        end
-        if CleveRoids._auraCleanupTimerId then
-            pcall(UnitXP, "timer", "disarm", CleveRoids._auraCleanupTimerId)
-        end
+    -- Cancel periodic C_Timer tickers
+    if CleveRoids._cleanupTicker then
+        CleveRoids._cleanupTicker:Cancel()
+    end
+    if CleveRoids._auraCleanupTicker then
+        CleveRoids._auraCleanupTicker:Cancel()
     end
     -- Clear spell caches to prevent stale data
     if CleveRoids.spellIdCache then
@@ -5226,66 +5180,20 @@ function CleveRoids.Frame:PLAYER_LOGIN()
     if CleveRoids.disabled then return end
 
     _, CleveRoids.playerClass = UnitClass("player")
-    _, CleveRoids.playerGuid = UnitExists("player")
+
+    CleveRoids.hasRelicSlot = UnitHasRelicSlot("player") and true or false
+
     CleveRoids.IndexSpells()
     CleveRoids.IndexPetSpells()
     CleveRoids.initializationTimer = GetTime() + 1.5
 
+    -- Guarantee a full index (talents + macros + action bars) even if
+    -- UPDATE_MACROS / SPELLS_CHANGED happen not to fire before the init timer.
+    -- Coalesces with those events' arming; RebuildMacros runs once for the burst.
+    CleveRoids.macroRebuildTime = GetTime() + 0.3
+
     -- PERFORMANCE: Initialize event-driven cache states
     CleveRoids._cachedPlayerInCombat = UnitAffectingCombat("player") and true or false
-
-    -- Schedule delayed WDB warmup (loads items into client cache via tooltip scan)
-    -- This ensures GetItemInfo() works for all inventory items after a WDB clear
-    CleveRoids.wdbWarmupTime = GetTime() + 3.0  -- 3 second delay after login
-end
-
--- PERFORMANCE: WDB warmup - tooltip scan all bag items to ensure they're cached
--- This prevents GetItemInfo() returning nil for items after a WDB clear
-function CleveRoids.DoWDBWarmup()
-    if CleveRoids.wdbWarmupDone then return end
-    CleveRoids.wdbWarmupDone = true
-
-    -- Create a hidden tooltip for scanning if it doesn't exist
-    local tip = CleveRoidsWDBTip
-    if not tip then
-        tip = CreateFrame("GameTooltip", "CleveRoidsWDBTip", UIParent, "GameTooltipTemplate")
-        tip:SetOwner(WorldFrame, "ANCHOR_NONE")
-    end
-
-    local scanned = 0
-
-    -- Scan all bag slots
-    for bag = 0, 4 do
-        local slots = GetContainerNumSlots(bag) or 0
-        for slot = 1, slots do
-            local link = GetContainerItemLink(bag, slot)
-            if link then
-                -- Tooltip scan loads the item into WDB
-                tip:ClearLines()
-                tip:SetBagItem(bag, slot)
-                scanned = scanned + 1
-            end
-        end
-    end
-
-    -- Scan equipped items
-    for slot = 0, 19 do
-        local link = GetInventoryItemLink("player", slot)
-        if link then
-            tip:ClearLines()
-            tip:SetInventoryItem("player", slot)
-            scanned = scanned + 1
-        end
-    end
-
-    -- Now trigger a full item index to populate the cache with valid data
-    if CleveRoids.IndexItems then
-        CleveRoids.IndexItems()
-    end
-
-    if CleveRoids.debug then
-        CleveRoids.Print("|cff88ff88[WDB Warmup]|r Scanned " .. scanned .. " items into cache")
-    end
 end
 
 function CleveRoids.Frame:ADDON_LOADED(addon)
@@ -5297,63 +5205,16 @@ function CleveRoids.Frame:ADDON_LOADED(addon)
 end
 
 function CleveRoids.Frame:UNIT_CASTEVENT(caster,target,action,spell_id,cast_time)
-    -- Handle melee swings for judgement refresh
+    -- Melee swings carry no spell to resolve. ClassicAPI mirrors the server's
+    -- paladin judgement-refresh rule off SMSG_ATTACKERSTATEUPDATE in the DLL
+    -- (src/aura/JudgementRefresh.cpp), so there is nothing to do here.
     if action == "MAINHAND" or action == "OFFHAND" then
-        -- Only process if this is the player's melee swing
-        if caster == CleveRoids.playerGuid and CleveRoids.playerClass == "PALADIN" then
-            -- Refresh judgements on the target
-            -- Defensive: verify libdebuff is a table before accessing properties
-            local lib = type(CleveRoids.libdebuff) == "table" and CleveRoids.libdebuff or nil
-            if target and lib and lib.objects then
-                local normalizedTarget = CleveRoids.NormalizeGUID(target)
-                if normalizedTarget and lib.objects[normalizedTarget] then
-                    -- Refresh all active Judgements on the target
-                    for spellID, rec in pairs(lib.objects[normalizedTarget]) do
-                        -- Check if this is a judgement by spell ID
-                        if lib.judgementSpells and lib.judgementSpells[spellID] and rec.start and rec.duration then
-                            -- Only refresh if the Judgement is still active and was cast by player
-                            local remaining = rec.duration + rec.start - GetTime()
-                            if remaining > 0 and rec.caster == "player" then
-                                -- Refresh the Judgement by updating the start time
-                                rec.start = GetTime()
-
-                                local spellName = GetSpellRecField(spellID, "name")
-                                local baseName = CleveRoids.StripRank(spellName) or "Unknown"
-
-                                if CleveRoids.debug then
-                                    DEFAULT_CHAT_FRAME:AddMessage(
-                                        string.format("|cff00ffaa[Judgement Refresh]|r Refreshed %s (ID:%d) on %s hit - new duration: %ds",
-                                            baseName, spellID, action, rec.duration)
-                                    )
-                                end
-
-                                -- Also sync to pfUI if it's loaded (pre-7.6 only)
-                                if not CleveRoids.hasPfUI76 and pfUI and pfUI.api and pfUI.api.libdebuff then
-                                    local targetName = (lib.guidToName and lib.guidToName[normalizedTarget]) or UnitName("target")
-                                    local targetLevel = UnitLevel("target") or 0
-
-                                    if targetName then
-                                        pfUI.api.libdebuff:AddEffect(targetName, targetLevel, baseName, rec.duration, "player")
-
-                                        if CleveRoids.debug then
-                                            DEFAULT_CHAT_FRAME:AddMessage(
-                                                string.format("|cff00ffaa[pfUI Judgement Refresh]|r Synced %s refresh to pfUI", baseName)
-                                            )
-                                        end
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-        return  -- Still return early after processing melee
+        return
     end
 
     -- Debug channel tracking
     if CleveRoids.ChannelTimeDebug then
-        local spellName = spell_id and GetSpellRecField and GetSpellRecField(spell_id, "name") or "Unknown"
+        local spellName = spell_id and C_Spell.GetSpellName(spell_id) or "Unknown"
         if string.find(spellName, "Arcane") then
             DEFAULT_CHAT_FRAME:AddMessage(string.format("|cff00ff00[UNIT_CASTEVENT]|r %s: %s (ID:%s) caster=%s player=%s",
                 action, spellName, tostring(spell_id), tostring(caster), tostring(CleveRoids.playerGuid)))
@@ -5426,8 +5287,8 @@ function CleveRoids.Frame:UNIT_CASTEVENT(caster,target,action,spell_id,cast_time
     if CleveRoids.currentSequence and caster == CleveRoids.playerGuid then
         local active = CleveRoids.GetCurrentSequenceAction(CleveRoids.currentSequence)
 
-        local name = GetSpellRecField(spell_id, "name")
-        local rank = GetSpellRecField(spell_id, "rank")
+        local name = C_Spell.GetSpellName(spell_id)
+        local rank = C_Spell.GetSpellSubtext(spell_id)
         local nameRank = (rank and rank ~= "") and (name .. "(" .. rank .. ")") or nil
         local isSeqSpell = active and active.action and (
             active.action == name or
@@ -5452,6 +5313,11 @@ function CleveRoids.Frame:UNIT_CASTEVENT(caster,target,action,spell_id,cast_time
         end
     end
 
+    -- Per-spell [lastcast] tracking (SuperWoW CAST = successful finish)
+    if caster == CleveRoids.playerGuid and action == "CAST" and CleveRoids.RecordLastCast then
+        CleveRoids.RecordLastCast(spell_id, C_Spell.GetSpellName(spell_id))
+    end
+
     if CleveRoidMacros.realtime == 0 then
         CleveRoids.QueueActionUpdate()
     end
@@ -5459,15 +5325,88 @@ end
 
 -- Nampower SPELL_CAST_EVENT handler for reliable channel tracking
 -- Also handles spell_tracking clearing and cast sequence advancement (Nampower fallback for UNIT_CASTEVENT)
+-- Nampower SPELL_CAST_EVENT. This one handler covers three separate concerns that
+-- used to live in two same-named functions, the second of which silently replaced
+-- the first (Lua assigns in file order), so the channel/sequence half never ran:
+--   1. [casting] conditional state + cast bookkeeping (lastCastSpell, pendingCasts,
+--      combo-point capture for finishers).
+--   2. Channel start detection.
+--   3. The Nampower fallback for spell_tracking and cast-sequence advancement, used
+--      when SuperWoW is absent and UNIT_CASTEVENT never fires.
+-- Args arrive from the dispatcher as (self, arg1..arg10).
 function CleveRoids.Frame:SPELL_CAST_EVENT(success, spellId, castType, targetGuid, itemId)
     local CHANNEL = 4
+
+    -- BUGFIX: Update casting state on spell cast events (for [casting] conditional)
+    if CleveRoids.UpdateCastingState then
+        CleveRoids.UpdateCastingState()
+    end
+
+    if success == 1 then
+        CleveRoids.lastCastSpell = {
+            spellId = spellId,
+            castType = castType,
+            targetGuid = targetGuid,
+            timestamp = GetTime()
+        }
+        local name = C_Spell.GetSpellName(spellId)
+        if name then
+            CleveRoids.lastCastSpell.spellName = name
+        end
+        -- Per-spell [lastcast] timestamps. Prefer SuperWoW UNIT_CASTEVENT CAST
+        -- (fires on successful finish). Without SuperWoW, record here at cast start.
+        if CleveRoids.RecordLastCast and not CleveRoids.hasSuperwow then
+            CleveRoids.RecordLastCast(spellId, name)
+        end
+
+        -- Track pending cast for SPELL_GO correlation (reactive ability detection)
+        -- Keyed by spellId so concurrent casts don't overwrite each other
+        CleveRoids.pendingCasts = CleveRoids.pendingCasts or {}
+
+        -- Clean up consumed entries older than 5 seconds (lightweight, runs per-cast)
+        local cleanupTime = GetTime() - 5
+        for id, entry in pairs(CleveRoids.pendingCasts) do
+            if entry.consumed and entry.consumedAt and entry.consumedAt < cleanupTime then
+                CleveRoids.pendingCasts[id] = nil
+            end
+        end
+
+        CleveRoids.pendingCasts[spellId] = {
+            castType = castType,
+            targetGuid = targetGuid,
+            timestamp = GetTime(),
+            comboPoints = nil,
+        }
+
+        -- Capture combo points NOW (before server consumes them)
+        -- SPELL_CAST_EVENT fires client-side, so CP are guaranteed available
+        if (CleveRoids.IsComboScalingSpellID and CleveRoids.IsComboScalingSpellID(spellId)) or
+           (CleveRoids.FerociousBiteSpellIDs and CleveRoids.FerociousBiteSpellIDs[spellId]) then
+            local cp = CleveRoids.GetComboPoints and CleveRoids.GetComboPoints() or 0
+            if cp > 0 then
+                CleveRoids.pendingCasts[spellId].comboPoints = cp
+                if CleveRoids.debug then
+                    local castSpellName = C_Spell.GetSpellName(spellId) or "Unknown"
+                    DEFAULT_CHAT_FRAME:AddMessage(
+                        string.format("|cff00ff88[SPELL_CAST_EVENT]|r Captured %d CP for %s (ID:%d)",
+                            cp, castSpellName, spellId)
+                    )
+                end
+            end
+        end
+    else
+        -- Cast failed - clear pending entry for this spell
+        if CleveRoids.pendingCasts then
+            CleveRoids.pendingCasts[spellId] = nil
+        end
+    end
 
     if castType == CHANNEL and success == 1 then
         -- Channel started successfully
         CleveRoids.CurrentSpell.type = "channeled"
         CleveRoids.CurrentSpell.castingSpellId = spellId
 
-        local spellName = GetSpellRecField and GetSpellRecField(spellId, "name")
+        local spellName = C_Spell.GetSpellName(spellId)
         if spellName then
             CleveRoids.CurrentSpell.spellName = spellName
         end
@@ -5493,8 +5432,8 @@ function CleveRoids.Frame:SPELL_CAST_EVENT(success, spellId, castType, targetGui
         if CleveRoids.currentSequence and success == 1 then
             local active = CleveRoids.GetCurrentSequenceAction(CleveRoids.currentSequence)
             if active and active.action then
-                local name = GetSpellRecField(spellId, "name")
-                local rank = GetSpellRecField(spellId, "rank")
+                local name = C_Spell.GetSpellName(spellId)
+                local rank = C_Spell.GetSpellSubtext(spellId)
                 local nameRank = (rank and rank ~= "") and (name .. "(" .. rank .. ")") or nil
                 local isSeqSpell = (active.action == name or (nameRank and active.action == nameRank))
 
@@ -5511,7 +5450,7 @@ function CleveRoids.Frame:SPELL_CAST_EVENT(success, spellId, castType, targetGui
         if CleveRoids.currentSequence and success == 0 then
             local active = CleveRoids.GetCurrentSequenceAction(CleveRoids.currentSequence)
             if active and active.action then
-                local name = GetSpellRecField(spellId, "name")
+                local name = C_Spell.GetSpellName(spellId)
                 local isSeqSpell = (active.action == name)
                 if isSeqSpell then
                     CleveRoids.currentSequence.status = 1  -- Reset to retry
@@ -5569,8 +5508,8 @@ function CleveRoids.Frame:SPELL_START_SELF(casterGuid, targetGuid, spellId, cast
     if CleveRoids.currentSequence and castTimeMs and castTimeMs > 0 then
         local active = CleveRoids.GetCurrentSequenceAction(CleveRoids.currentSequence)
         if active and active.action then
-            local name = GetSpellRecField(spellId, "name")
-            local rank = GetSpellRecField(spellId, "rank")
+            local name = C_Spell.GetSpellName(spellId)
+            local rank = C_Spell.GetSpellSubtext(spellId)
             local nameRank = (rank and rank ~= "") and (name .. "(" .. rank .. ")") or nil
             local isSeqSpell = (active.action == name or (nameRank and active.action == nameRank))
 
@@ -5607,7 +5546,7 @@ function CleveRoids.Frame:SPELL_FAILED_SELF(casterGuid, targetGuid, spellId, ...
     if CleveRoids.currentSequence then
         local active = CleveRoids.GetCurrentSequenceAction(CleveRoids.currentSequence)
         if active and active.action then
-            local name = GetSpellRecField(spellId, "name")
+            local name = C_Spell.GetSpellName(spellId)
             local isSeqSpell = name and (active.action == name)
             if isSeqSpell then
                 CleveRoids.currentSequence.status = 1  -- Reset to retry
@@ -5646,7 +5585,7 @@ function CleveRoids.Frame:SPELLCAST_CHANNEL_START()
     -- Update spell info
     if spellId then
         CleveRoids.CurrentSpell.castingSpellId = spellId
-        local spellName = GetSpellRecField(spellId, "name")
+        local spellName = C_Spell.GetSpellName(spellId)
         if spellName then
             CleveRoids.CurrentSpell.spellName = spellName
         end
@@ -5673,26 +5612,6 @@ function CleveRoids.Frame:SPELLCAST_CHANNEL_STOP()
     CleveRoids.CurrentSpell.type = ""
     CleveRoids.CurrentSpell.spellName = ""
     CleveRoids.CurrentSpell.castingSpellId = nil
-
-    -- WARLOCK DARK HARVEST: Mark channeling as ended
-    -- Credits: Avitasia / Cursive addon
-    if CleveRoids.darkHarvestData and CleveRoids.darkHarvestData.isActive then
-        CleveRoids.darkHarvestData.isActive = false
-        CleveRoids.darkHarvestData.endTime = GetTime()
-
-        -- Apply Dark Harvest end to all DoTs on target (finalizes reduction)
-        if CleveRoids.libdebuff and CleveRoids.libdebuff.ApplyDarkHarvestEnd then
-            CleveRoids.libdebuff.ApplyDarkHarvestEnd(CleveRoids.darkHarvestData.targetGUID)
-        end
-
-        if CleveRoids.debug then
-            local activeTime = CleveRoids.darkHarvestData.endTime - CleveRoids.darkHarvestData.startTime
-            DEFAULT_CHAT_FRAME:AddMessage(
-                string.format("|cff9482c9[Dark Harvest]|r Channel ended after %.1fs (DoT acceleration stopped)",
-                    activeTime)
-            )
-        end
-    end
 
     -- Force immediate action update
     CleveRoids.TestForAllActiveActions()
@@ -5726,7 +5645,7 @@ function CleveRoids.Frame:SPELLCAST_START()
     -- Update spell info
     if spellId then
         CleveRoids.CurrentSpell.castingSpellId = spellId
-        local spellName = GetSpellRecField(spellId, "name")
+        local spellName = C_Spell.GetSpellName(spellId)
         if spellName then
             CleveRoids.CurrentSpell.spellName = spellName
         end
@@ -5828,6 +5747,48 @@ function CleveRoids.Frame:PLAYER_REGEN_ENABLED()
     end
 end
 
+-- Movement -> [moving]/[nomoving] icon refresh.
+-- PLAYER_STARTED_MOVING is reliable; PLAYER_STOPPED_MOVING is not (key-release
+-- based, misses geometry/click-to-move/root/knockback stops). So STARTED flips
+-- the icon to "moving" and starts a bounded poll; the poll detects the real
+-- stop from IsPlayerMoving() (the signal [moving] uses), refreshes once, and
+-- shuts itself off. Only runs while actually moving, so no idle cost.
+local MOVE_POLL_INTERVAL = 0.1
+local moveTicker = nil
+
+local function StopMovePoll()
+    if moveTicker then
+        moveTicker:Cancel()
+        moveTicker = nil
+    end
+end
+
+local function StartMovePoll()
+    if moveTicker then return end  -- already polling this movement
+    moveTicker = C_Timer.NewTicker(MOVE_POLL_INTERVAL, function()
+        if CleveRoids.isShuttingDown then
+            StopMovePoll()
+            return
+        end
+        if not CleveRoids.IsPlayerMoving() then
+            -- Movement actually ended -- repaint [moving]/[nomoving] icons, stop polling.
+            StopMovePoll()
+            if CleveRoidMacros.realtime == 0 then
+                CleveRoids.QueueActionUpdate()
+            end
+        end
+    end)
+end
+
+function CleveRoids.Frame:PLAYER_STARTED_MOVING()
+    -- Started moving: flip to the [moving] icon now...
+    if CleveRoidMacros.realtime == 0 then
+        CleveRoids.QueueActionUpdate()
+    end
+    -- ...and watch for the (unreliable-event) stop ourselves.
+    StartMovePoll()
+end
+
 function CleveRoids.Frame:PLAYER_TARGET_CHANGED()
     CleveRoids.CurrentSpell.autoAttack = false
     CleveRoids.CurrentSpell.autoAttackLock = false
@@ -5880,35 +5841,48 @@ function CleveRoids.Frame:PLAYER_TARGET_CHANGED()
     end
 end
 
-function CleveRoids.Frame:UPDATE_MACROS()
+-- Full rebuild of the macro/spell/talent/action-bar index. Invoked from the
+-- update loop when macroRebuildTime elapses (armed by UPDATE_MACROS /
+-- SPELLS_CHANGED / PLAYER_LOGIN), never inline from an event - so a burst of
+-- those events collapses into one rebuild.
+function CleveRoids.RebuildMacros()
     CleveRoids.currentSequence = nil
-    -- Explicitly nil tables before re-assignment
-    CleveRoids.ParsedMsg = nil;
     CleveRoids.ParsedMsg = {}
-
-    CleveRoids.Macros = nil;
+    CleveRoids.ExpandedGroups = {}
     CleveRoids.Macros = {}
-
-    CleveRoids.Actions = nil;
     CleveRoids.Actions = {}
-
-    CleveRoids.Sequences = nil;
     CleveRoids.Sequences = {}
 
     CleveRoids.IndexSpells()
     CleveRoids.IndexTalents()
     CleveRoids.IndexPetSpells()
-    CleveRoids.IndexActionBars()
+
+    -- Action-bar indexing is wasted before `ready` (GetAction early-returns
+    -- while not ready), and the +1.5s init timer rebuilds the bars once anyway.
+    -- Skipping it here keeps the pre-ready login rebuilds from fanning 120 slot
+    -- updates out to Blizzard/pfUI/Bongos buttons.
+    if CleveRoids.ready then
+        CleveRoids.IndexActionBars()
+        -- Macros were re-parsed above, so every published value is stale. Covers
+        -- macros that aren't on a bar, which IndexActionBars never visits.
+        CleveRoids.PublishAllDisplays()
+    end
+
     if CleveRoidMacros.realtime == 0 then
         CleveRoids.QueueActionUpdate()
     end
 end
 
+function CleveRoids.Frame:UPDATE_MACROS()
+    -- Debounce: collapse bursts (login, rapid macro edits) into one rebuild.
+    CleveRoids.macroRebuildTime = GetTime() + 0.3
+end
+
 function CleveRoids.Frame:SPELLS_CHANGED()
-    -- PERFORMANCE: Clear spell caches when spells change (learn new ranks, etc.)
+    -- Clear spell caches immediately (cheap); defer the heavy rebuild.
     CleveRoids.spellIdCache = {}
     CleveRoids.spellNameCache = {}
-    CleveRoids.Frame:UPDATE_MACROS()
+    CleveRoids.macroRebuildTime = GetTime() + 0.3
 end
 
 function CleveRoids.Frame:ACTIONBAR_SLOT_CHANGED()
@@ -5919,7 +5893,24 @@ function CleveRoids.Frame:ACTIONBAR_SLOT_CHANGED()
     end
 end
 
-function CleveRoids.Frame:BAG_UPDATE()
+-- ClassicAPI fires GET_ITEM_INFO_RECEIVED when an async item-cache fill lands
+-- (the hooked GetItemInfo auto-warms on a miss). It fires for EVERY fill in the
+-- game though - quest DB scans, AH sweeps, chat-link hovers, inspects - so we
+-- ignore anything not in pendingItemInfo (items we own that missed the last
+-- index pass). That check is O(1) and keeps unrelated bursts free.
+function CleveRoids.Frame:GET_ITEM_INFO_RECEIVED()
+    local pending = CleveRoids.pendingItemInfo
+    if not (pending and pending[arg1]) then return end
+    -- Skip during combat; PLAYER_LEAVE_COMBAT re-indexes once it's safe.
+    if UnitAffectingCombat("player") then return end
+    -- Arm once per burst; the update loop clears it after re-indexing. Later
+    -- arrivals re-arm it, guaranteeing the final resolved state is captured.
+    if not CleveRoids.itemInfoReindexTime then
+        CleveRoids.itemInfoReindexTime = GetTime() + 0.5
+    end
+end
+
+function CleveRoids.Frame:BAG_UPDATE_DELAYED()
     -- In combat: Skip expensive indexing but still queue icon update
     -- so conditionals like [inbag] re-evaluate (they use live bag APIs)
     if UnitAffectingCombat("player") then
@@ -5935,10 +5926,15 @@ function CleveRoids.Frame:BAG_UPDATE()
         CleveRoids.lastItemIndexTime = now
         CleveRoids.IndexItems()
 
-        -- Directly clear all relevant caches and force a UI refresh for all buttons.
-        CleveRoids.Actions = {}
-        CleveRoids.Macros = {}
-        CleveRoids.IndexActionBars()
+        -- Rebuild action bars so item-dependent macro resolution refreshes.
+        -- Skipped before `ready` (GetAction early-returns; the +1.5s init timer
+        -- builds the bars), which keeps bag-fill events during login from firing
+        -- a full 120-slot rebuild each time.
+        if CleveRoids.ready then
+            CleveRoids.Actions = {}
+            CleveRoids.Macros = {}
+            CleveRoids.IndexActionBars()
+        end
     end
 
     -- Always queue icon update so conditionals like [inbag] re-evaluate
@@ -5948,34 +5944,22 @@ function CleveRoids.Frame:BAG_UPDATE()
     end
 end
 
-function CleveRoids.Frame:UNIT_INVENTORY_CHANGED()
-    if arg1 ~= "player" then return end
+function CleveRoids.Frame:PLAYER_EQUIPMENT_CHANGED()
+    -- arg1 = inventory slot that changed, arg2 = hasCurrent (slot now holds an item)
+    local slot, hasCurrent = arg1, arg2
 
-    -- PERFORMANCE: Invalidate equipment cache for HasGearEquipped
-    if CleveRoids.InvalidateEquipmentCache then
-        CleveRoids.InvalidateEquipmentCache()
-    end
-
-    -- In combat: Skip ALL processing - EquipBagItem already handles cache invalidation
-    -- This eliminates lag from IndexEquippedItems during rapid gear swapping
+    -- In combat: skip the slot reindex to avoid lag during rapid gear swapping.
+    -- [equipped] reads live engine state (C_Item.IsEquippedItem) so it stays
+    -- correct regardless; the Items table self-heals on the next BAG_UPDATE.
     if UnitAffectingCombat("player") then
         return
     end
 
-    -- Out of combat: Full indexing with throttle
-    local now = GetTime()
-    if (now - (CleveRoids.lastEquipIndexTime or 0)) < 0.2 then
-        CleveRoids.equipIndexPendingTime = now
-        return
-    end
-
-    CleveRoids.lastEquipIndexTime = now
-    CleveRoids.equipIndexPendingTime = nil
-    CleveRoids.lastItemIndexTime = now
-    CleveRoids.IndexItems()
-    CleveRoids.Actions = {}
-    CleveRoids.Macros = {}
-    CleveRoids.IndexActionBars()
+    -- Out of combat: reindex only the one slot that changed (the bag side of any
+    -- swap is covered by BAG_UPDATE_DELAYED). No action-bar rebuild is needed -
+    -- gear swaps don't change what's on the bars; QueueActionUpdate re-evaluates
+    -- [equipped:...] icons/conditionals.
+    CleveRoids.IndexEquipSlot(slot, hasCurrent)
 
     if CleveRoidMacros.realtime == 0 then
         CleveRoids.QueueActionUpdate()
@@ -6012,6 +5996,13 @@ function CleveRoids.Frame:PLAYER_FOCUS_CHANGED()
         CleveRoids.QueueActionUpdate()
     end
 end
+-- School-interrupt lockout applied/changed -> refresh [locked]/[nolocked] icons.
+function CleveRoids.Frame:LOSS_OF_CONTROL_ADDED()
+    if CleveRoidMacros.realtime == 0 then
+        CleveRoids.QueueActionUpdate()
+    end
+end
+CleveRoids.Frame.LOSS_OF_CONTROL_UPDATE = CleveRoids.Frame.LOSS_OF_CONTROL_ADDED
 function CleveRoids.Frame:UPDATE_SHAPESHIFT_FORM()
     if CleveRoidMacros.realtime == 0 then
         CleveRoids.QueueActionUpdate()
@@ -6027,29 +6018,33 @@ function CleveRoids.Frame:SPELL_UPDATE_COOLDOWN()
     CleveRoids.UpdateAllManagedCooldowns()
 end
 
--- Helper function to notify addon handlers about cooldown updates
--- NOTE: Blizzard action buttons are handled natively via ActionButton_OnEvent which calls
--- our GetActionCooldown hook. We do NOT call CooldownFrame_SetTimer directly to avoid
--- conflicts with SuperWoW's own GetActionCooldown handling for #showtooltip macros.
--- Track which slots have been logged to avoid spam
+-- Helper function to notify addon handlers about cooldown updates.
+-- Blizzard's own buttons need nothing from us: ActionButton_OnEvent reads the stock
+-- action-bar functions, which resolve through the value published with
+-- C_Macro.SetMacroDisplay. This exists only for third-party bars that keep their own
+-- cooldown frames -- Bongos does; pfUI's handler ignores the event outright.
+--
+-- Runs on every SPELL_UPDATE_COOLDOWN (so every GCD and cooldown tick) and touches
+-- every managed slot, up to 120. Keep the per-slot work here and in the registered
+-- handlers allocation-free.
 CleveRoids.cooldownDebugLogged = {}
 
 function CleveRoids.UpdateAllManagedCooldowns()
     local Actions = CleveRoids.Actions
     if not Actions then return end
 
-    -- Only notify third-party handlers (pfUI/Bongos)
-    -- Blizzard buttons update themselves via GetActionCooldown hook
-    local handlerCount = CleveRoids.actionEventHandlers and table.getn(CleveRoids.actionEventHandlers) or 0
+    local handlers = CleveRoids.actionEventHandlers
+    local handlerCount = handlers and table.getn(handlers) or 0
     if handlerCount == 0 then return end
 
-    for slot, actions in pairs(Actions) do
+    local slot, actions = next(Actions)
+    while slot do
         if actions then
-            -- Notify action event handlers (for pfUI/Bongos) about the cooldown update
-            for _, fn_h in ipairs(CleveRoids.actionEventHandlers) do
-                fn_h(slot, "ACTIONBAR_UPDATE_COOLDOWN")
+            for i = 1, handlerCount do
+                handlers[i](slot, "ACTIONBAR_UPDATE_COOLDOWN")
             end
         end
+        slot, actions = next(Actions, slot)
     end
 end
 -- PERFORMANCE OPTIMIZATION: Throttled event handlers to reduce CPU spam
@@ -6134,11 +6129,9 @@ function CleveRoids.Frame:SPELL_QUEUE_EVENT()
                 queueType = eventCode,
                 queueTime = GetTime()
             }
-            if GetSpellRecField then
-                local name = GetSpellRecField(spellId, "name")
-                if name then
-                    CleveRoids.queuedSpell.spellName = name
-                end
+            local name = C_Spell.GetSpellName(spellId)
+            if name then
+                CleveRoids.queuedSpell.spellName = name
             end
             -- BUGFIX: Update casting state when spell is queued (for [casting] conditional)
             if CleveRoids.UpdateCastingState then
@@ -6155,77 +6148,6 @@ function CleveRoids.Frame:SPELL_QUEUE_EVENT()
         end
     end
 end
-
-function CleveRoids.Frame:SPELL_CAST_EVENT()
-    if event == "SPELL_CAST_EVENT" then
-        local success = arg1
-        local spellId = arg2
-        local castType = arg3
-        local targetGuid = arg4
-
-        -- BUGFIX: Update casting state on spell cast events (for [casting] conditional)
-        if CleveRoids.UpdateCastingState then
-            CleveRoids.UpdateCastingState()
-        end
-
-        if success == 1 then
-            CleveRoids.lastCastSpell = {
-                spellId = spellId,
-                castType = castType,
-                targetGuid = targetGuid,
-                timestamp = GetTime()
-            }
-            if GetSpellRecField then
-                local name = GetSpellRecField(spellId, "name")
-                if name then
-                    CleveRoids.lastCastSpell.spellName = name
-                end
-            end
-
-            -- Track pending cast for SPELL_GO correlation (reactive ability detection)
-            -- Keyed by spellId so concurrent casts don't overwrite each other
-            CleveRoids.pendingCasts = CleveRoids.pendingCasts or {}
-
-            -- Clean up consumed entries older than 5 seconds (lightweight, runs per-cast)
-            local cleanupTime = GetTime() - 5
-            for id, entry in pairs(CleveRoids.pendingCasts) do
-                if entry.consumed and entry.consumedAt and entry.consumedAt < cleanupTime then
-                    CleveRoids.pendingCasts[id] = nil
-                end
-            end
-
-            CleveRoids.pendingCasts[spellId] = {
-                castType = castType,
-                targetGuid = targetGuid,
-                timestamp = GetTime(),
-                comboPoints = nil,
-            }
-
-            -- Capture combo points NOW (before server consumes them)
-            -- SPELL_CAST_EVENT fires client-side, so CP are guaranteed available
-            if (CleveRoids.IsComboScalingSpellID and CleveRoids.IsComboScalingSpellID(spellId)) or
-               (CleveRoids.FerociousBiteSpellIDs and CleveRoids.FerociousBiteSpellIDs[spellId]) then
-                local cp = CleveRoids.GetComboPoints and CleveRoids.GetComboPoints() or 0
-                if cp > 0 then
-                    CleveRoids.pendingCasts[spellId].comboPoints = cp
-                    if CleveRoids.debug then
-                        local castSpellName = GetSpellRecField and GetSpellRecField(spellId, "name") or "Unknown"
-                        DEFAULT_CHAT_FRAME:AddMessage(
-                            string.format("|cff00ff88[SPELL_CAST_EVENT]|r Captured %d CP for %s (ID:%d)",
-                                cp, castSpellName, spellId)
-                        )
-                    end
-                end
-            end
-        else
-            -- Cast failed - clear pending entry for this spell
-            if CleveRoids.pendingCasts then
-                CleveRoids.pendingCasts[spellId] = nil
-            end
-        end
-    end
-end
-
 
 -- Nampower v2.41+: KEY_DOWN/KEY_UP events
 -- arg1=keyCode (int), arg2=metaKeyState (Shift=1,Ctrl=2,Alt=4), arg3=repeat, arg4=time
@@ -6244,17 +6166,43 @@ function CleveRoids.Frame:KEY_UP()
     CleveRoids.isActionUpdateQueued = true
 end
 
-CleveRoids.Hooks.SendChatMessage = SendChatMessage
-function SendChatMessage(msg, ...)
-    -- Filter out #showtooltip lines
-    -- pfUI's macrotweak also does this, but our pattern is more specific
+-- ClassicAPI PLAYER_TOTEM_UPDATE: arg1 = the slot (1 Fire .. 4 Air) whose totem
+-- was dropped, expired, killed or recalled. The slot goes unread and every macro
+-- is refreshed: a [totem:X] macro may name any slot, and [nototem:X] flips on any
+-- of them.
+function CleveRoids.Frame:PLAYER_TOTEM_UPDATE()
+    CleveRoids.QueueActionUpdate()
+end
+
+-- Base SendChatMessage captured at first hook; used to break a hook cycle.
+local baseSendChatMessage = SendChatMessage
+local sendingChatMessage = false
+
+-- Swallow #showtooltip lines Blizzard's macro executor sends to chat.
+local function CleveRoids_SendChatMessage(msg, ...)
     if msg and string.find(msg, "^#showtooltip") then
         return
     end
-    
-    -- Call the original (or pfUI's hook if it's in the chain)
-    CleveRoids.Hooks.SendChatMessage(msg, unpack(arg))
+    if sendingChatMessage then
+        -- Re-entered via a hook cycle; go straight to base to avoid recursion.
+        return baseSendChatMessage(msg, unpack(arg))
+    end
+    sendingChatMessage = true
+    local ok, err = pcall(CleveRoids.Hooks.SendChatMessage, msg, unpack(arg))
+    sendingChatMessage = false
+    if not ok and geterrorhandler then geterrorhandler()(err) end
 end
+
+-- Reassert our filter as the outermost SendChatMessage hook (no-op if already on
+-- top). See the OnUpdate caller for why this is needed.
+function CleveRoids.EnsureSendChatMessageHook()
+    if SendChatMessage ~= CleveRoids_SendChatMessage then
+        CleveRoids.Hooks.SendChatMessage = SendChatMessage
+        SendChatMessage = CleveRoids_SendChatMessage
+    end
+end
+
+CleveRoids.EnsureSendChatMessageHook()
 
 CleveRoids.RegisterActionEventHandler = function(fn)
     if type(fn) == "function" then
@@ -6407,6 +6355,8 @@ SlashCmdList["CLEVEROID"] = function(msg)
         local num = tonumber(val)
         if num == 0 or num == 1 then
             CleveRoidMacros.realtime = num
+            -- The unit streams are only worth receiving in event-driven mode.
+            CleveRoids.ApplyUnitStreamEvents()
             CleveRoids.Print("realtime set to " .. num)
         else
             CleveRoids.Print("Usage: /cleveroid realtime 0 or 1 - Force realtime updates rather than event based updates (Default: 0. 1 = on, increases CPU load.)")
@@ -6455,7 +6405,7 @@ SlashCmdList["CLEVEROID"] = function(msg)
             CleveRoids_LearnedDurations = CleveRoids_LearnedDurations or {}
             CleveRoids_LearnedDurations[spellID] = CleveRoids_LearnedDurations[spellID] or {}
             CleveRoids_LearnedDurations[spellID][playerGUID] = duration
-            local spellName = GetSpellRecField(spellID, "name") or "Unknown"
+            local spellName = C_Spell.GetSpellName(spellID) or "Unknown"
             CleveRoids.Print("Set " .. spellName .. " (ID:" .. spellID .. ") duration to " .. duration .. "s")
         else
             CleveRoids.Print("Usage: /cleveroid learn <spellID> <duration> - Manually set spell duration")
@@ -6472,7 +6422,7 @@ SlashCmdList["CLEVEROID"] = function(msg)
         else
             local spellID = tonumber(val)
             if spellID and CleveRoids_LearnedDurations and CleveRoids_LearnedDurations[spellID] then
-                local spellName = GetSpellRecField(spellID, "name") or "Unknown"
+                local spellName = C_Spell.GetSpellName(spellID) or "Unknown"
                 CleveRoids_LearnedDurations[spellID] = nil
                 CleveRoids.Print("Forgot " .. spellName .. " (ID:" .. spellID .. ") duration")
             elseif spellID then
@@ -6658,7 +6608,7 @@ SlashCmdList["CLEVEROID"] = function(msg)
 
                 CleveRoids.Print(schoolColor .. string.upper(school) .. "|r (" .. table.getn(spellIDs) .. " spells):")
                 for _, spellID in ipairs(spellIDs) do
-                    local spellName = GetSpellRecField and GetSpellRecField(spellID, "name") or "Unknown"
+                    local spellName = C_Spell.GetSpellName(spellID) or "Unknown"
                     CleveRoids.Print("  " .. spellName .. " (ID:" .. spellID .. ")")
                 end
             end
@@ -6701,7 +6651,7 @@ SlashCmdList["CLEVEROID"] = function(msg)
             CleveRoids.Print("No learned combo durations yet. Cast finishers and let them expire!")
         else
             for spellID, cpData in pairs(CleveRoids_ComboDurations) do
-                local spellName = GetSpellRecField(spellID, "name") or ("Spell " .. spellID)
+                local spellName = C_Spell.GetSpellName(spellID) or ("Spell " .. spellID)
                 CleveRoids.Print(spellName .. " (ID:" .. spellID .. "):")
                 for cp = 1, 5 do
                     if cpData[cp] then
@@ -6783,7 +6733,7 @@ SlashCmdList["CLEVEROID"] = function(msg)
             return
         end
 
-        local spellName = GetSpellRecField(spellID, "name") or ("Spell " .. spellID)
+        local spellName = C_Spell.GetSpellName(spellID) or ("Spell " .. spellID)
         local modifier = CleveRoids.talentModifiers and CleveRoids.talentModifiers[spellID]
 
         if not modifier then
@@ -6859,7 +6809,7 @@ SlashCmdList["CLEVEROID"] = function(msg)
             for spellID, rec in pairs(lib.objects[guid]) do
                 if rec and rec.start and rec.duration then
                     local timeRemaining = rec.duration + rec.start - GetTime()
-                    local spellName = GetSpellRecField and GetSpellRecField(spellID, "name") or "Unknown"
+                    local spellName = C_Spell.GetSpellName(spellID) or "Unknown"
                     local caster = rec.caster or "unknown"
                     local stacks = rec.stacks or 0
                     if timeRemaining > 0 then
@@ -6886,7 +6836,7 @@ SlashCmdList["CLEVEROID"] = function(msg)
         for i = 1, 16 do
             local texture, stacks, debuffType, spellID = UnitDebuff("target", i)
             if texture then
-                local spellName = GetSpellRecField and GetSpellRecField(spellID, "name") or "slot" .. i
+                local spellName = C_Spell.GetSpellName(spellID) or "slot" .. i
                 CleveRoids.Print(string.format("  Slot %d: [%d] %s (stacks: %d)",
                     i, spellID or 0, spellName, stacks or 0))
                 debuffCount = debuffCount + 1
@@ -6906,7 +6856,7 @@ SlashCmdList["CLEVEROID"] = function(msg)
                 -- Check if this might be an overflow debuff by checking libdebuff durations
                 local isDebuff = lib and lib.durations and lib.durations[spellID]
                 if isDebuff then
-                    local spellName = GetSpellRecField and GetSpellRecField(spellID, "name") or "slot" .. i
+                    local spellName = C_Spell.GetSpellName(spellID) or "slot" .. i
                     CleveRoids.Print(string.format("  Buff Slot %d (=Debuff %d): [%d] %s (stacks: %d) |cffff8800OVERFLOW|r",
                         i, i + 16, spellID, spellName, stacks or 0))
                     overflowCount = overflowCount + 1
@@ -6947,7 +6897,7 @@ SlashCmdList["CLEVEROID"] = function(msg)
             -- Also check GetSpellRecField
             if GetSpellRecField then
                 for id = 1, 30000 do
-                    local name = GetSpellRecField(id, "name")
+                    local name = C_Spell.GetSpellName(id)
                     if name and string.lower(name) == string.lower(searchName) then
                         local found = false
                         for _, existingID in ipairs(foundIDs) do
@@ -7095,12 +7045,7 @@ SlashCmdList["CLEVEROID"] = function(msg)
         CleveRoids.Print("|cffffaa00Tracked Auras:|r")
         local trackingCount = 0
         local now = GetTime()
-        -- Determine which backing table to iterate
-        local isPfUI = CleveRoids.hasPfUI76 and pfUI and pfUI.libdebuff_all_auras
-        local backingTable = isPfUI and pfUI.libdebuff_all_auras or CleveRoids.AllCasterAuraTracking or {}
-        if isPfUI then
-            CleveRoids.Print("  (reading from pfUI.libdebuff_all_auras)")
-        end
+        local backingTable = CleveRoids.AllCasterAuraTracking or {}
         for targetGuid, spellNames in pairs(backingTable) do
             local unitName = nil
             -- Try to find unit name for this GUID (use pcall to handle invalid units like "focus")
@@ -7282,9 +7227,9 @@ local function FindItemInBags(itemName)
     local searchName = string.lower(itemName)
     for bag = 0, 4 do
         for slot = 1, GetContainerNumSlots(bag) do
-            local link = GetContainerItemLink(bag, slot)
-            if link then
-                local _, _, foundName = string.find(link, "%[(.+)%]")
+            local id = C_Container.GetContainerItemID(bag, slot)
+            if id then
+                local foundName = C_Item.GetItemNameByID(id)
                 if foundName and string.find(string.lower(foundName), searchName, 1, true) then
                     return bag, slot, foundName
                 end
@@ -7292,6 +7237,66 @@ local function FindItemInBags(itemName)
         end
     end
     return nil
+end
+
+function CleveRoids.DoFeedPet(msg)
+    -- Check macro stop flags
+    if CleveRoids.stopMacroFlag or CleveRoids.skipMacroFlag then
+        return false
+    end
+
+    local action = function(itemName)
+        -- Defensive: make sure we are not in "split stack" mode and nothing is on the cursor
+        if type(CloseStackSplitFrame) == "function" then CloseStackSplitFrame() end
+        if CursorHasItem and CursorHasItem() then ClearCursor() end
+
+        -- Failure tips (center-screen UIErrorsFrame), checked in priority order
+        if UnitAffectingCombat("player") then
+            UIErrorsFrame:AddMessage("你处于交战状态", 1.0, 0.1, 0.1, 1.0)
+            return false
+        end
+
+        local _, isHunterPet = HasPetUI()
+        if not isHunterPet or not UnitExists("pet") then
+            UIErrorsFrame:AddMessage("你没召唤宠物", 1.0, 0.1, 0.1, 1.0)
+            return false
+        end
+
+        if CleveRoids.IsUnitDeadOrGhost("pet") or UnitHealth("pet") <= 0 then
+            UIErrorsFrame:AddMessage("宠物已死亡", 1.0, 0.1, 0.1, 1.0)
+            return false
+        end
+
+        local bag, bagSlot = FindItemInBags(itemName)
+        if not bag then
+            CleveRoids.Print("Item not found: " .. itemName)
+            return false
+        end
+
+        local feedPet = C_Spell.GetSpellName(6991) or "Feed Pet"
+        CastSpellByName(feedPet)
+
+        -- Only apply the food if Feed Pet actually entered item-targeting mode.
+        if SpellIsTargeting and not SpellIsTargeting() then
+            return false
+        end
+
+        PickupContainerItem(bag, bagSlot)
+        return true
+    end
+
+    -- PERFORMANCE: Use numeric iteration to avoid pairs() iterator allocation
+    local parts = CleveRoids.splitStringIgnoringQuotes(msg)
+    for i = 1, table.getn(parts) do
+        if CleveRoids.DoWithConditionals(parts[i], action, CleveRoids.FixEmptyTarget, false, action) then
+            -- If /firstaction was used, stop macro evaluation after first successful feed
+            if CleveRoids.stopOnCastFlag then
+                CleveRoids.stopMacroFlag = true
+            end
+            return true
+        end
+    end
+    return false
 end
 
 function CleveRoids.DoApply(hand, msg)
@@ -7333,6 +7338,17 @@ function CleveRoids.DoApply(hand, msg)
         end
     end
     return handled
+end
+
+SLASH_FEEDPET1 = "/petfeed"
+SLASH_FEEDPET2 = "/feedpet"
+SlashCmdList.FEEDPET = function(msg)
+    -- Require an item name argument
+    if not msg or msg == "" or string.gsub(msg, "%s+", "") == "" then
+        CleveRoids.Print("Usage: /petfeed [conditionals] ItemName")
+        return
+    end
+    CleveRoids.DoFeedPet(msg)
 end
 
 SLASH_APPLYMAIN1 = "/applymain"

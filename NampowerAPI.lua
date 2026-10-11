@@ -71,7 +71,6 @@
 
     Spell Miss Events (v2.31+):
     - SPELL_MISS_SELF / SPELL_MISS_OTHER - Spell miss/resist/immune/dodge/etc.
-    - GetSpellPower([mode]) - Player mod damage done for all 7 schools
 
     Aura Event State Parameter (v2.32+):
     - Buff/debuff events include 7th `state` parameter (0=added, 1=removed, 2=modified)
@@ -364,9 +363,8 @@ API.VERSION_REQUIREMENTS = {
     ["AuraDurationEvents"]      = { 2, 30, 0 },
     ["GetPlayerAuraDuration"]   = { 2, 30, 0, "GetPlayerAuraDuration" },
 
-    -- v2.31+ - Spell miss events and spell power query
+    -- v2.31+ - Spell miss events
     ["SpellMissEvents"]         = { 2, 31, 0 },  -- SPELL_MISS_SELF/OTHER events
-    ["GetSpellPower"]           = { 2, 31, 0, "GetSpellPower" },
 
     -- v2.32+ - Aura event state parameter and stack removal fix
     ["AuraEventState"]          = { 2, 32, 0 },
@@ -575,9 +573,8 @@ local function InitializeFeatures()
     f.hasAuraDurationEvents = API.HasFeature("AuraDurationEvents")
     f.hasGetPlayerAuraDuration = API.HasFeature("GetPlayerAuraDuration")
 
-    -- v2.31+ Spell miss events and spell power
+    -- v2.31+ Spell miss events
     f.hasSpellMissEvents = API.HasFeature("SpellMissEvents")
-    f.hasGetSpellPower = API.HasFeature("GetSpellPower")
 
     -- v2.32+ Aura event state parameter
     f.hasAuraEventState = API.HasFeature("AuraEventState")
@@ -1477,7 +1474,7 @@ end
 
 -- Get all equipped items for a unit
 -- Requires v2.18+ for native GetEquippedItems (with Lua fallback for player only)
--- Returns table with slot indices (0-18) as keys, item info tables as values
+-- Returns table with slot indices (1-19) as keys, item info tables as values
 function API.GetEquippedItems(unitToken)
     unitToken = unitToken or "player"
 
@@ -1492,16 +1489,13 @@ function API.GetEquippedItems(unitToken)
     end
 
     local items = {}
-    for slot = 0, 18 do
-        local link = GetInventoryItemLink("player", slot + 1)
-        if link then
-            local _, _, itemId = string.find(link, "item:(%d+)")
-            if itemId then
-                items[slot] = {
-                    itemId = tonumber(itemId),
-                    -- Other fields not available without native API
-                }
-            end
+    for slot = 1, 19 do
+        local itemId = CleveRoids.ClassicAPI.GetInventoryItemID("player", slot)
+        if itemId then
+            items[slot] = {
+                itemId = itemId,
+                -- Other fields not available without native API
+            }
         end
     end
 
@@ -1524,14 +1518,11 @@ function API.GetEquippedItem(unitToken, slot)
         return nil
     end
 
-    local link = GetInventoryItemLink("player", slot + 1)  -- 1-indexed
-    if link then
-        local _, _, itemId = string.find(link, "item:(%d+)")
-        if itemId then
-            return {
-                itemId = tonumber(itemId),
-            }
-        end
+    local itemId = CleveRoids.ClassicAPI.GetInventoryItemID("player", slot)  -- both are 1-indexed
+    if itemId then
+        return {
+            itemId = itemId,
+        }
     end
 
     return nil
@@ -1560,16 +1551,13 @@ function API.GetBagItems(bagIndex)
         local bagContents = {}
         local numSlots = GetContainerNumSlots(bagIndex) or 0
         for slot = 1, numSlots do
-            local link = GetContainerItemLink(bagIndex, slot)
-            if link then
-                local _, _, itemId = string.find(link, "item:(%d+)")
+            local itemId = CleveRoids.ClassicAPI.GetContainerItemID(bagIndex, slot)
+            if itemId then
                 local _, count = GetContainerItemInfo(bagIndex, slot)
-                if itemId then
-                    bagContents[slot] = {
-                        itemId = tonumber(itemId),
-                        stackCount = count or 1,
-                    }
-                end
+                bagContents[slot] = {
+                    itemId = itemId,
+                    stackCount = count or 1,
+                }
             end
         end
         return bagContents
@@ -1582,16 +1570,13 @@ function API.GetBagItems(bagIndex)
         if numSlots > 0 then
             bags[bag] = {}
             for slot = 1, numSlots do
-                local link = GetContainerItemLink(bag, slot)
-                if link then
-                    local _, _, itemId = string.find(link, "item:(%d+)")
+                local itemId = CleveRoids.ClassicAPI.GetContainerItemID(bag, slot)
+                if itemId then
                     local _, count = GetContainerItemInfo(bag, slot)
-                    if itemId then
-                        bags[bag][slot] = {
-                            itemId = tonumber(itemId),
-                            stackCount = count or 1,
-                        }
-                    end
+                    bags[bag][slot] = {
+                        itemId = itemId,
+                        stackCount = count or 1,
+                    }
                 end
             end
         end
@@ -1609,16 +1594,13 @@ function API.GetBagItem(bagIndex, slot)
     end
 
     -- Fallback: manual lookup
-    local link = GetContainerItemLink(bagIndex, slot)
-    if link then
-        local _, _, itemId = string.find(link, "item:(%d+)")
+    local itemId = CleveRoids.ClassicAPI.GetContainerItemID(bagIndex, slot)
+    if itemId then
         local _, count = GetContainerItemInfo(bagIndex, slot)
-        if itemId then
-            return {
-                itemId = tonumber(itemId),
-                stackCount = count or 1,
-            }
-        end
+        return {
+            itemId = itemId,
+            stackCount = count or 1,
+        }
     end
 
     return nil
@@ -1690,7 +1672,7 @@ function API.IsItemInSlot(itemIdOrName, inventorySlot)
 
     -- Use native v2.18 GetEquippedItem if available
     if GetEquippedItem then
-        local slotInfo = GetEquippedItem("player", inventorySlot - 1)  -- 0-indexed
+        local slotInfo = GetEquippedItem("player", inventorySlot) -- 1-indexed (1-19)
         if slotInfo and slotInfo.itemId then
             local checkId = tonumber(itemIdOrName)
             if checkId then
@@ -1779,14 +1761,13 @@ function API.FindBagItem(itemIdOrName)
     for bag = 0, 4 do
         local numSlots = GetContainerNumSlots(bag) or 0
         for slot = 1, numSlots do
-            local link = GetContainerItemLink(bag, slot)
-            if link then
-                if checkId then
-                    local _, _, currentId = string.find(link, "item:(%d+)")
-                    if currentId and tonumber(currentId) == checkId then
-                        return bag, slot
-                    end
-                elseif checkName then
+            if checkId then
+                if CleveRoids.ClassicAPI.GetContainerItemID(bag, slot) == checkId then
+                    return bag, slot
+                end
+            elseif checkName then
+                local link = GetContainerItemLink(bag, slot)
+                if link then
                     local _, _, currentName = string.find(link, "|h%[(.-)%]|h")
                     if currentName and string.lower(currentName) == checkName then
                         return bag, slot
@@ -2103,26 +2084,28 @@ function API.GetTrinkets(copy)
     for bag = 0, 4 do
         local numSlots = GetContainerNumSlots(bag) or 0
         for slot = 1, numSlots do
-            local link = GetContainerItemLink(bag, slot)
-            if link then
-                local _, _, itemId = string.find(link, "item:(%d+)")
-                if itemId then
-                    local numItemId = tonumber(itemId)
-                    local invType = API.GetItemInventoryType(numItemId)
-                    if invType == 12 then  -- Trinket
-                        local _, _, name = string.find(link, "|h%[(.-)%]|h")
-                        local texture = GetContainerItemInfo(bag, slot)
-                        local itemLevel = API.GetItemLevel(numItemId)
-                        trinkets[index] = {
-                            itemId = numItemId,
-                            trinketName = name or "Unknown",
-                            texture = texture,
-                            itemLevel = itemLevel,
-                            bagIndex = bag,
-                            slotIndex = slot,
-                        }
-                        index = index + 1
+            local numItemId = CleveRoids.ClassicAPI.GetContainerItemID(bag, slot)
+            if numItemId then
+                local invType = API.GetItemInventoryType(numItemId)
+                if invType == 12 then  -- Trinket
+                    -- Only build the link string for actual trinkets, to read the name.
+                    local link = GetContainerItemLink(bag, slot)
+                    local name
+                    if link then
+                        local _
+                        _, _, name = string.find(link, "|h%[(.-)%]|h")
                     end
+                    local texture = GetContainerItemInfo(bag, slot)
+                    local itemLevel = API.GetItemLevel(numItemId)
+                    trinkets[index] = {
+                        itemId = numItemId,
+                        trinketName = name or "Unknown",
+                        texture = texture,
+                        itemLevel = itemLevel,
+                        bagIndex = bag,
+                        slotIndex = slot,
+                    }
+                    index = index + 1
                 end
             end
         end
@@ -2183,18 +2166,13 @@ function API.GetTrinketCooldown(slot)
     end
 
     -- Get item ID from equipped slot
-    local link = GetInventoryItemLink("player", equipSlot)
-    if not link then
-        return -1
-    end
-
-    local _, _, itemId = string.find(link, "item:(%d+)")
+    local itemId = CleveRoids.ClassicAPI.GetInventoryItemID("player", equipSlot)
     if not itemId then
         return -1
     end
 
     -- Get cooldown info
-    return API.GetItemCooldownInfo(tonumber(itemId))
+    return API.GetItemCooldownInfo(itemId)
 end
 
 -- Use an equipped trinket
@@ -3289,15 +3267,34 @@ function API.CastNoQueueById(spellId, target)
     if not spellId then return false end
 
     if API.features.hasCastSpellNoQueue and _G.CastSpellNoQueue then
+        -- Numeric 1st arg = spellbook SLOT (OOB-crash if given a spell ID).
+        -- Always use documented "spellId:N" string form for IDs.
+        local castArg = spellId
+        if type(spellId) == "number" then
+            if FindSpellBookSlotByID and not FindSpellBookSlotByID(spellId) then
+                return false
+            end
+            castArg = "spellId:" .. spellId
+        end
+        local book = BOOKTYPE_SPELL or "spell"
         if target then
-            _G.CastSpellNoQueue(spellId, 0, target)
+            _G.CastSpellNoQueue(castArg, book, target)
         else
-            _G.CastSpellNoQueue(spellId, 0)
+            _G.CastSpellNoQueue(castArg, book)
         end
         return true
     end
 
-    -- Fall back to CastNoQueue by name
+    -- Fall back: resolve slot then CastSpell
+    if type(spellId) == "number" and FindSpellBookSlotByID then
+        local slot, book = FindSpellBookSlotByID(spellId)
+        if slot then
+            CastSpell(slot, book or BOOKTYPE_SPELL or "spell")
+            return true
+        end
+        return false
+    end
+
     local name = API.GetSpellNameById(spellId)
     if name then
         return API.CastNoQueue(name, target)
@@ -3406,15 +3403,6 @@ API.MISS_INFO = {
 -- SPELL POWER QUERY (v2.31+)
 --------------------------------------------------------------------------------
 
--- Get spell power for all 7 damage schools (v2.31+)
--- mode: optional mode parameter passed to GetSpellPower
--- Returns: physical, holy, fire, nature, frost, shadow, arcane (or nil if unavailable)
-function API.GetSpellPower(mode)
-    if not API.features.hasGetSpellPower or not _G.GetSpellPower then
-        return nil, nil, nil, nil, nil, nil, nil
-    end
-    return _G.GetSpellPower(mode)
-end
 
 -- Get duration of a spell in milliseconds (v2.38+)
 -- For channeling spells: returns the channel duration.
@@ -3521,145 +3509,6 @@ function API.GetUnitMaxHealth(unitToken)
         if val then return val end
     end
     return UnitHealthMax(unitToken)
-end
-
--- powerType: nil=current, 0=mana, 1=rage, 2=focus, 3=energy
--- GetUnitField uses power1-power4 fields
-local POWER_FIELDS = { [0] = "power1", [1] = "power2", [2] = "power3", [3] = "power4" }
-local MAX_POWER_FIELDS = { [0] = "maxPower1", [1] = "maxPower2", [2] = "maxPower3", [3] = "maxPower4" }
-
-function API.GetUnitPower(unitToken, powerType)
-    if API.features.hasGetUnitField and GetUnitField and powerType then
-        local field = POWER_FIELDS[powerType]
-        if field then
-            local val = GetUnitField(unitToken, field)
-            if val then return val end
-        end
-    end
-    return UnitMana(unitToken)
-end
-
-function API.GetUnitMaxPower(unitToken, powerType)
-    if API.features.hasGetUnitField and GetUnitField and powerType then
-        local field = MAX_POWER_FIELDS[powerType]
-        if field then
-            local val = GetUnitField(unitToken, field)
-            if val then return val end
-        end
-    end
-    return UnitManaMax(unitToken)
-end
-
---------------------------------------------------------------------------------
--- RELIQUARY DBC FUNCTIONS (optional DLL)
---------------------------------------------------------------------------------
-
--- Safe Reliquary call wrapper — returns nil on missing DLL or lookup failure
-local function RQ_SafeCall(func, ...)
-    if not func then return nil end
-    local ok, result = pcall(func, unpack(arg))
-    if ok then return result end
-    return nil
-end
-
--- Get item set data from DBC by set ID
--- Returns: { name, itemId_1..17, setSpellId_1..8, setThreshold_1..8 } or nil
-function API.GetItemSet(setId)
-    if not setId or not _G.RQ_GetItemSet then return nil end
-    return RQ_SafeCall(_G.RQ_GetItemSet, setId)
-end
-
--- Get the set ID for an item (via Nampower's GetItemStatsField)
--- Returns: setId (number) or nil if item has no set
-function API.GetItemSetId(itemId)
-    if not itemId then return nil end
-    local setId = API.GetItemField(itemId, "itemSet")
-    if setId and setId ~= 0 then return setId end
-    return nil
-end
-
--- Get all item IDs belonging to a set (from Reliquary DBC)
--- Returns: { itemId1, itemId2, ... } or nil
-function API.GetItemSetItems(setId)
-    local setData = API.GetItemSet(setId)
-    if not setData then return nil end
-
-    local items = {}
-    for i = 1, 17 do
-        local id = setData["itemId_" .. i]
-        if id then
-            id = tonumber(id)
-            if id and id ~= 0 then
-                table.insert(items, id)
-            end
-        end
-    end
-
-    if table.getn(items) > 0 then return items end
-    return nil
-end
-
--- Get set bonus spell/threshold pairs from DBC
--- Returns: { { spellId = N, threshold = N }, ... } or nil
-function API.GetItemSetBonuses(setId)
-    local setData = API.GetItemSet(setId)
-    if not setData then return nil end
-
-    local bonuses = {}
-    for i = 1, 8 do
-        local spellId = setData["setSpellId_" .. i]
-        local threshold = setData["setThreshold_" .. i]
-        if spellId and threshold then
-            spellId = tonumber(spellId)
-            threshold = tonumber(threshold)
-            if spellId and spellId ~= 0 and threshold and threshold > 0 then
-                table.insert(bonuses, { spellId = spellId, threshold = threshold })
-            end
-        end
-    end
-
-    if table.getn(bonuses) > 0 then return bonuses end
-    return nil
-end
-
--- Get spell effect radius in yards from DBC
--- spellId: the spell to look up
--- effectIndex: 1, 2, or 3 (which effect slot, default 1)
--- Returns: radius (number) or nil
-function API.GetSpellEffectRadius(spellId, effectIndex)
-    effectIndex = effectIndex or 1
-    if not spellId then return nil end
-
-    -- Get the radius index from the spell's effect via Nampower
-    local radiusField = "effectRadiusIndex"
-    local rec = API.GetSpellRecord(spellId)
-    if not rec then return nil end
-
-    -- effectRadiusIndex is an array field — access by effect index
-    local radiusIndex = nil
-    if rec.effectRadiusIndex then
-        if type(rec.effectRadiusIndex) == "table" then
-            radiusIndex = rec.effectRadiusIndex[effectIndex]
-        else
-            -- Single value (effect 1 only)
-            if effectIndex == 1 then
-                radiusIndex = rec.effectRadiusIndex
-            end
-        end
-    end
-
-    if not radiusIndex or radiusIndex == 0 then return nil end
-
-    -- Try Reliquary for the SpellRadius DBC lookup
-    if _G.RQ_GetSpellRadius then
-        local radiusData = RQ_SafeCall(_G.RQ_GetSpellRadius, radiusIndex)
-        if radiusData and radiusData.radius then
-            local radius = tonumber(radiusData.radius)
-            if radius and radius > 0 then return radius end
-        end
-    end
-
-    return nil
 end
 
 -- Expose API globally for other addons

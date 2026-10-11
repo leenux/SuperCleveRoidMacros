@@ -35,64 +35,29 @@ if CleveRoids.ignoreKeywords then
     end
 end
 
+-- Deprecated names still valid in macros; ParseMsg rewrites them to the current
+-- keyword, so they never reach Keywords/ignoreKeywords under their old name.
+if CleveRoids.conditionalAliases then
+    for alias, _ in pairs(CleveRoids.conditionalAliases) do
+        VALID_CONDITIONALS[alias] = true
+    end
+end
+
 -- Known valid commands
 local VALID_COMMANDS = {
-    -- Core addon commands
+    -- Core commands NOT registered via SlashCmdList (so not auto-discoverable):
+    -- Blizzard builtins (/cast, /target, /run, ...) handled by FrameXML/C, and
+    -- /focus (a pfUI command, only discoverable when pfUI is loaded).
     ["/cast"] = true,
-    ["/castpet"] = true,
-    ["/cancelaura"] = true,
-    ["/castsequence"] = true,
-    ["/equip"] = true,
-    ["/equipmh"] = true,
-    ["/equipoh"] = true,
-    ["/equip11"] = true,
-    ["/equip12"] = true,
-    ["/equip13"] = true,
-    ["/equip14"] = true,
     ["/focus"] = true,
-    ["/petattack"] = true,
-    ["/petfollow"] = true,
-    ["/petwait"] = true,
-    ["/petpassive"] = true,
-    ["/petaggressive"] = true,
-    ["/petdefensive"] = true,
     ["/print"] = true,
     ["/run"] = true,
-    ["/runmacro"] = true,
     ["/script"] = true,
-    ["/startattack"] = true,
-    ["/stopattack"] = true,
-    ["/stopcasting"] = true,
-    ["/stopmacro"] = true,
-    ["/skipmacro"] = true,
     ["/target"] = true,
-    ["/cleartarget"] = true,
-    ["/unqueue"] = true,
-    ["/use"] = true,
-    ["/unbuff"] = true,
-    ["/unshift"] = true,
-    ["/retarget"] = true,
-    ["/firstaction"] = true,
-    ["/nofirstaction"] = true,
-    ["/applymain"] = true,
-    ["/applyoff"] = true,
-    ["/clearequipqueue"] = true,
-    ["/equipqueuestatus"] = true,
-    ["/quickheal"] = true,
-    ["/qh"] = true,
-    ["/rl"] = true,
-    ["/combotrack"] = true,
-    ["/cleveroid"] = true,
-    ["/cleveroidmacros"] = true,
-    ["/macrocheck"] = true,
-    -- Turtle WoW / third-party addon commands
-    ["/db"] = true,
-    ["/rinse"] = true,
-    ["/am"] = true,
-    ["/aux"] = true,
-    ["/instancetimers"] = true,
-    ["/umacro"] = true,
-    ["/cursive"] = true,
+    -- NOTE: This addon's own commands (/cast pets, /equip*, /quickheal, /cleveroid,
+    -- /macrocheck, ...) and third-party addon commands (/aux, /rinse, /cursive, ...)
+    -- are no longer hardcoded here. They self-register via SlashCmdList and are
+    -- picked up automatically by CleveRoids.IsRegisteredCommand (see discovery below).
 
     --------------------------------------------------------------------------
     -- Standard WoW 1.12.1 Commands
@@ -476,6 +441,52 @@ function CleveRoids.GetWhitelistedCommandsList()
     return list
 end
 
+-- ============================================================================
+-- Registered Slash Command Discovery (auto-covers addon & client commands)
+-- ============================================================================
+-- Builtin chat/social/emote commands and macro pseudo-commands are NOT in
+-- SlashCmdList (FrameXML handles them internally), so VALID_COMMANDS above
+-- still covers those. This scan covers everything registered the addon way:
+-- any "/foo" exposed via SLASH_<KEY>N globals, including this addon's own
+-- commands, third-party addons (/aux, /rinse, ...), and client commands like
+-- /dump. Rebuilt on PLAYER_ENTERING_WORLD so addons that load or lazily
+-- register after us are still picked up.
+
+local registeredCommands = nil
+
+local function BuildRegisteredCommandCache()
+    local cache = {}
+    if type(SlashCmdList) == "table" then
+        for key, _ in pairs(SlashCmdList) do
+            -- Each handler key maps to one or more SLASH_<KEY>N "/string" globals
+            local i = 1
+            while true do
+                local slash = _G["SLASH_" .. key .. i]
+                if not slash then break end
+                if type(slash) == "string" and slash ~= "" then
+                    cache[string.lower(slash)] = true
+                end
+                i = i + 1
+            end
+        end
+    end
+    registeredCommands = cache
+    return cache
+end
+
+function CleveRoids.IsRegisteredCommand(cmd)
+    if not cmd or cmd == "" then return false end
+    local cache = registeredCommands or BuildRegisteredCommandCache()
+    return cache[string.lower(cmd)] == true
+end
+
+-- Invalidate the cache when the world loads so post-load registrations count.
+local registeredCmdFrame = CreateFrame("Frame")
+registeredCmdFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+registeredCmdFrame:SetScript("OnEvent", function()
+    BuildRegisteredCommandCache()
+end)
+
 -- Commands that can have conditionals without actions
 -- e.g., /petattack [harm] or /target [exists,hp:<=20]
 local COMMANDS_NO_ACTION_NEEDED = {
@@ -495,13 +506,20 @@ local COMMANDS_NO_ACTION_NEEDED = {
     ["/startattack"] = true,
     ["/stopattack"] = true,
     ["/stopcasting"] = true,
+    ["/stopchanneling"] = true,
     ["/unqueue"] = true,
     ["/retarget"] = true,
+    ["/assist"] = true,
+    ["/ast"] = true,
+    ["/a"] = true,
+    ["/petsync"] = true,
     ["/stopmacro"] = true,
     ["/skipmacro"] = true,
     ["/unshift"] = true,
     ["/firstaction"] = true,
     ["/nofirstaction"] = true,
+    ["/hsshot"] = true,
+    ["/hsfill"] = true,
     ["/clearequipqueue"] = true,
     ["/equipqueuestatus"] = true,
     ["/quickheal"] = true,
@@ -549,7 +567,6 @@ end
 local ERROR_TYPES = {
     INVALID_CONDITIONAL = "Invalid conditional",
     MISMATCHED_BRACKETS = "Mismatched brackets",
-    EMPTY_CONDITIONAL = "Empty conditional block",
     INVALID_OPERATOR = "Invalid operator",
     MISSING_ARGUMENT = "Missing argument",
     INVALID_COMMAND = "Unknown command",
@@ -648,6 +665,8 @@ local function validateConditional(conditional, args, action)
         combo = true,
         hp = true, myhp = true, rawhp = true, myrawhp = true,
         power = true, mypower = true, rawpower = true, myrawpower = true,
+        mana = true, mymana = true, rage = true, myrage = true,
+        energy = true, myenergy = true,
         hplost = true, myhplost = true,
         powerlost = true, mypowerlost = true,
         stat = true,
@@ -656,7 +675,9 @@ local function validateConditional(conditional, args, action)
         button = true,
         form = true, stance = true,
         level = true, mylevel = true,
+        myspellhaste = true,
         distance = true, nodistance = true,
+        partyhp = true, partypower = true,
         swingtimer = true, stimer = true,
         rangedtimer = true, rtimer = true,
         threat = true,
@@ -675,6 +696,8 @@ local function validateConditional(conditional, args, action)
     -- Check operator syntax for numeric comparisons
     if args and type(args) == "string" then
         local hasHpOrPower = safeStringFind(baseCond, "hp") or safeStringFind(baseCond, "power") or
+                            safeStringFind(baseCond, "mana") or safeStringFind(baseCond, "energy") or
+                            safeStringFind(baseCond, "rage") or safeStringFind(baseCond, "haste") or
                             safeStringFind(baseCond, "combo") or baseCond == "stat"
         if hasHpOrPower then
             local hasOperator = safeStringFind(args, "[<>=~]+")
@@ -734,7 +757,9 @@ local function validateLine(line, lineNum)
         local _, _, cmd = safeStringFind(line, "^(/[a-z]+%d*)")
         if cmd then
             local lowerCmd = string.lower(cmd)
-            if not VALID_COMMANDS[lowerCmd] and not CleveRoids.IsWhitelistedCommand(lowerCmd) then
+            if not VALID_COMMANDS[lowerCmd]
+                and not CleveRoids.IsRegisteredCommand(lowerCmd)
+                and not CleveRoids.IsWhitelistedCommand(lowerCmd) then
                 table.insert(localErrors, {
                     type = ERROR_TYPES.INVALID_COMMAND,
                     line = lineNum,
@@ -830,16 +855,19 @@ local function validateLine(line, lineNum)
                 actionPart = "/" .. actionPart  -- Add leading slash if missing after split
             end
 
-            -- Parse conditionals if present - use non-greedy match
-            local condStart = safeStringFind(actionPart, "%[")
+            -- Parse the leading run of [conditional] blocks, if any. `[a][b] X` is
+            -- Blizzard-style OR chaining: every block is validated, and the action
+            -- is what follows the last one.
+            local blocks = {}
             local condEnd = nil
-            local conditionBlock = nil
+            local condStart = safeStringFind(actionPart, "%[")
+            local len = safeStringLen(actionPart)
 
-            if condStart then
+            while condStart do
                 -- Find matching closing bracket
                 local depth = 0
                 local inQuotes = false
-                local len = safeStringLen(actionPart)
+                local closePos = nil
 
                 for i = condStart, len do
                     local char = safeStringSub(actionPart, i, i)
@@ -853,23 +881,30 @@ local function validateLine(line, lineNum)
                         elseif char == "]" then
                             depth = depth - 1
                             if depth == 0 then
-                                condEnd = i
-                                conditionBlock = safeStringSub(actionPart, condStart + 1, i - 1)
+                                closePos = i
                                 break
                             end
                         end
                     end
                 end
+                if not closePos then break end
+
+                table.insert(blocks, safeStringSub(actionPart, condStart + 1, closePos - 1))
+                condEnd = closePos
+
+                -- Another block directly after this one (whitespace allowed)?
+                local _, wsEnd = safeStringFind(actionPart, "^%s*", closePos + 1)
+                local nextPos = (wsEnd or closePos) + 1
+                if safeStringSub(actionPart, nextPos, nextPos) == "[" then
+                    condStart = nextPos
+                else
+                    condStart = nil
+                end
             end
 
-            if conditionBlock then
-                if safeTrim(conditionBlock) == "" then
-                    table.insert(localErrors, {
-                        type = ERROR_TYPES.EMPTY_CONDITIONAL,
-                        line = lineNum,
-                        message = "Empty conditional block []"
-                    })
-                else
+            for _, conditionBlock in ipairs(blocks) do
+                -- `[]` is the always-true group; nothing to validate
+                if safeTrim(conditionBlock) ~= "" then
                     -- Check for invalid @ target syntax
                     local _, _, target = safeStringFind(conditionBlock, "(@[^%s,]+)")
                     if target and not safeStringFind(target, "^@[a-z]+%d*") then
@@ -917,7 +952,9 @@ local function validateLine(line, lineNum)
                         end
                     end
                 end
+            end
 
+            if condEnd then
                 -- Check for action after conditionals
                 -- Extract the command from this action part
                 local _, _, cmdFromAction = safeStringFind(actionPart, "^(/[a-z]+%d*)")
@@ -1066,17 +1103,7 @@ function CleveRoids.ValidateAllMacros()
     local results = {}
     local totalErrors = 0
 
-    -- Account-wide macros are indexed from 1 up to GetNumMacros().
-    -- Character-specific macros occupy the slots immediately following the account-wide ones.
-    -- In Classic clients, the macro UI has 18 General (Account) slots and 18 Character-Specific slots.
-    local numAccountMacros = GetNumMacros()
-
-    -- The WoW API GetMacroInfo(index) supports indexing up to 36 (1-18 for General, 19-36 for Character)
-    -- in Classic clients, even though the total is GetNumMacros() + GetNumCharacterMacros() in Retail.
-    -- To ensure we check all 36 possible slots:
-    local totalSlots = 36
-
-    for i = 1, totalSlots do
+    for i = 1, CleveRoids.MAX_MACRO_SLOTS do
         local nameSuccess, name = pcall(GetMacroInfo, i)
 
         -- Check if GetMacroInfo returned a name (i.e., the slot is used)

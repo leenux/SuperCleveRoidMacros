@@ -21,12 +21,13 @@ do
     cast=true, castsequence=true, use=true,
     startattack=true, stopattack=true, stopcasting=true, stopmacro=true,
     skipmacro=true, firstaction=true, nofirstaction=true,
-    target=true, retarget=true, cancelaura=true, unbuff=true,
-    unqueue=true, unshift=true, equip=true, equipmh=true, equipoh=true,
+    target=true, retarget=true, assist=true, ast=true, petsync=true, cancelaura=true, unbuff=true,
+    unqueue=true, unshift=true, equip=true, equipmh=true, equipoh=true, eqomh=true, eqooh=true,
     -- runmacro intentionally NOT included - see note above
     -- pet
     petattack=true, petfollow=true, petpassive=true,
     petaggressive=true, petdefensive=true, petwait=true,
+    petfeed=true, feedpet=true,
     -- healing (requires QuickHeal addon)
     quickheal=true, qh=true,
     -- additional commands that were missing
@@ -37,7 +38,7 @@ do
   }
 
   -- alias map (if CRM only registers /cancelaura, but /unbuff appears)
-  local ALIASES = { unbuff = "cancelaura" }
+  local ALIASES = { unbuff = "cancelaura", a = "assist" }
 
   local function normalize_cmd(cmd)
     if not cmd or cmd == "" then return nil end

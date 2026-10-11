@@ -63,9 +63,34 @@ SlashCmdList.EQSLOT13 = CleveRoids.DoEquipTrinket1
 SLASH_EQSLOT141 = "/equip14"
 SlashCmdList.EQSLOT14 = CleveRoids.DoEquipTrinket2
 
+-- Reclaim ClassicAPI's /equipset (command name EQUIP_SET) so it supports
+-- conditionals. ClassicAPI registers the localized aliases against EQUIP_SET;
+-- swapping the handler keeps every alias and adds the conditional engine.
+if SlashCmdList.EQUIP_SET then
+    SlashCmdList.EQUIP_SET = CleveRoids.DoEquipSet
+else
+    SLASH_EQUIPSET1 = "/equipset"
+    SlashCmdList.EQUIPSET = CleveRoids.DoEquipSet
+end
+
+-- ItemRack set equip with CleveRoids conditionals (/equipset is ClassicAPI sets)
+SLASH_EQIR1 = "/eqir"
+SlashCmdList.EQIR = CleveRoids.DoEquipItemRack
+
+-- Outfitter outfit slot equip: main-hand / off-hand item only (one piece per command)
+SLASH_EQOMH1 = "/eqomh"
+SlashCmdList.EQOMH = CleveRoids.DoEquipOutfitterMainhand
+
+SLASH_EQOOH1 = "/eqooh"
+SlashCmdList.EQOOH = CleveRoids.DoEquipOutfitterOffhand
+
 SLASH_UNSHIFT1 = "/unshift"
 
 SlashCmdList.UNSHIFT = CleveRoids.DoUnshift
+
+SLASH_CANCELFORM1 = "/cancelform"
+
+SlashCmdList.CANCELFORM = CleveRoids.DoCancelForm
 
 SLASH_UNQUEUE1 = "/unqueue"
 SlashCmdList.UNQUEUE = SpellStopCasting
@@ -86,24 +111,25 @@ end
 -- This ensures we have a fallback for non-conditional use.
 local StartAttack = function(msg)
     if not UnitExists("target") or CleveRoids.IsUnitDead("target") then TargetNearestEnemy() end
-    -- Check both event-based flag AND action bar state for reliable detection
+    -- Ground truth = action-bar state. Cached autoAttack can stay true after attack
+    -- actually stopped (missed PLAYER_LEAVE_COMBAT), which would skip AttackTarget
+    -- and leave SP_SwingTimer frozen at st_timer=0 ("full" on inverted styles).
     local isAttacking = CleveRoids.CurrentSpell.autoAttack
-    if not isAttacking then
-        -- Fallback: check action bar state via IsCurrentAction
-        local slot = CleveRoids.GetProxyActionSlot(CleveRoids.Localized.Attack)
-        if slot and IsCurrentAction(slot) then
-            CleveRoids.CurrentSpell.autoAttack = true
-            isAttacking = true
+    local slot = CleveRoids.GetProxyActionSlot(CleveRoids.Localized.Attack)
+    if slot then
+        local current = CleveRoids.Hooks and CleveRoids.Hooks.IsCurrentAction
+        if current then
+            isAttacking = current(slot) and true or false
+        else
+            isAttacking = IsCurrentAction(slot) and true or false
         end
+        CleveRoids.CurrentSpell.autoAttack = isAttacking
     end
     if not isAttacking and not CleveRoids.CurrentSpell.autoAttackLock and UnitExists("target") and UnitCanAttack("player","target") then
         CleveRoids.CurrentSpell.autoAttackLock = true
         CleveRoids.autoAttackLockElapsed = GetTime()
         AttackTarget()
-        -- FIX: Immediately set autoAttack flag so subsequent macro lines know attack started
-        -- Don't wait for PLAYER_ENTER_COMBAT event which has a delay
         CleveRoids.CurrentSpell.autoAttack = true
-        -- FIX: Queue icon update so action bars reflect the new state
         if CleveRoidMacros and CleveRoidMacros.realtime == 0 then
             CleveRoids.QueueActionUpdate()
         end
@@ -116,6 +142,12 @@ local StopAttack = function(msg)
     CleveRoids.DeferStopAttack()
 end
 
+local StopChanneling = function(msg)
+    -- No Blizzard equivalent: 1.12 has SpellStopCasting (immediate) and nothing
+    -- that waits for the next channel tick, so this is nampower-only.
+    CleveRoids.StopChanneling()
+end
+
 -- Register slash commands and assign original handlers.
 -- These will be hooked immediately after.
 SLASH_STARTATTACK1 = "/startattack"
@@ -126,6 +158,9 @@ SlashCmdList.STOPATTACK = StopAttack
 
 SLASH_STOPCASTING1 = "/stopcasting"
 SlashCmdList.STOPCASTING = SpellStopCasting
+
+SLASH_STOPCHANNELING1 = "/stopchanneling"
+SlashCmdList.STOPCHANNELING = StopChanneling
 
 SLASH_CLEARTARGET1 = "/cleartarget"
 SlashCmdList.CLEARTARGET = ClearTarget
@@ -185,6 +220,21 @@ SlashCmdList.STOPCASTING = function(msg)
     else
         -- If no conditionals, run the original command.
         CleveRoids.Hooks.STOPCASTING_SlashCmd()
+    end
+end
+
+-- /stopchanneling hook
+CleveRoids.Hooks.STOPCHANNELING_SlashCmd = SlashCmdList.STOPCHANNELING
+SlashCmdList.STOPCHANNELING = function(msg)
+    if CleveRoids.stopMacroFlag then return end
+    msg = msg or ""
+    if string.find(msg, "%[") then
+        -- If conditionals are present, let the function handle it.
+        -- It will only stop the channel if the conditions are met.
+        CleveRoids.DoConditionalStopChanneling(msg)
+    else
+        -- If no conditionals, run the original command.
+        CleveRoids.Hooks.STOPCHANNELING_SlashCmd(msg)
     end
 end
 
@@ -287,19 +337,20 @@ end
 
 CleveRoids.Hooks.TARGET_SlashCmd = SlashCmdList.TARGET
 CleveRoids.TARGET_SlashCmd = function(msg)
-    tmsg = CleveRoids.Trim(msg)
+    if CleveRoids.stopMacroFlag then return end
+    local tmsg = CleveRoids.Trim(msg)
 
+    -- Bare name with no options: hand to ClassicAPI / vanilla /target.
     if tmsg ~= "" and not string.find(tmsg, "%[") and not string.find(tmsg, "@") then
         CleveRoids.Hooks.TARGET_SlashCmd(tmsg)
         return
     end
 
-    if CleveRoids.DoTarget(tmsg) then
-        if UnitExists("target") then
-            return
-        end
-    end
-    CleveRoids.Hooks.TARGET_SlashCmd(msg)
+    -- Conditional / @unit lines are SCRM's dialect. Do NOT fall through to
+    -- ClassicAPI's SecureCmdOptionParse — it does not know keywords like
+    -- multiscan / notarget (parses as unknown "target") and would print
+    -- "unknown condition" while treating the line as always-false.
+    CleveRoids.DoTarget(tmsg)
 end
 SlashCmdList.TARGET = CleveRoids.TARGET_SlashCmd
 
@@ -320,18 +371,53 @@ SlashCmdList.RUNMACRO = function(msg)
     return CleveRoids.ExecuteMacroByName(CleveRoids.Trim(msg))
 end
 
--- Global RunMacro wrapper for user convenience (delegates to namespaced internal function)
--- This pattern ensures internal logic uses CleveRoids.ExecuteMacroByName and won't break
--- if another addon overwrites the global RunMacro
--- NOTE: When SuperMacro is also loaded, Compatibility/SuperMacro.lua redirects this to
--- SuperMacro_RunMacro so macros go through RunLine (where CRM commands are intercepted)
-function RunMacro(name)
-    return CleveRoids.ExecuteMacroByName(name)
-end
+-- The global RunMacro is installed by Core.lua, which loads before this file. Do not
+-- redefine it here: Core's hook accepts a macro index as well as a name (Blizzard's
+-- RunMacro takes either), delegates to SuperMacro when that is driving execution,
+-- falls back to the saved Blizzard original when a macro will not resolve, and clears
+-- the stop/skip flags at the start of a top-level run, which is what lets /stopmacro,
+-- /skipmacro and /firstaction work across parent/child macro boundaries. A plain
+-- name-only wrapper here silently replaced all of that.
+-- When SuperMacro is loaded, Compatibility/SuperMacro.lua redirects the global to
+-- SuperMacro_RunMacro so macros go through RunLine (where CRM commands are intercepted).
 
 SLASH_RETARGET1 = "/retarget"
 SlashCmdList.RETARGET = function(msg)
     CleveRoids.DoRetarget()
+end
+
+-- /ast: always SCRM assist-sync (default @leader).
+-- /assist: SCRM when args have [ or @; otherwise vanilla AssistUnit / AssistByName.
+local function VanillaAssist(msg)
+    msg = CleveRoids.Trim(msg or "")
+    if msg == "" then
+        if UnitExists("target") then
+            AssistUnit("target")
+        end
+    else
+        AssistByName(msg)
+    end
+end
+
+SLASH_AST1 = "/ast"
+SlashCmdList.AST = function(msg)
+    CleveRoids.DoAssist(msg)
+end
+
+SLASH_ASSIST1 = "/assist"
+SLASH_ASSIST2 = "/a"
+SlashCmdList.ASSIST = function(msg)
+    msg = CleveRoids.Trim(msg or "")
+    if msg ~= "" and (string.find(msg, "%[") or string.find(msg, "@")) then
+        CleveRoids.DoAssist(msg)
+    else
+        VanillaAssist(msg)
+    end
+end
+
+SLASH_PETSYNC1 = "/petsync"
+SlashCmdList.PETSYNC = function(msg)
+    CleveRoids.DoPetSyncLeader()
 end
 
 SLASH_STOPMACRO1 = "/stopmacro"

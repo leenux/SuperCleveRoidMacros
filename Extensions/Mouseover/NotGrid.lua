@@ -8,7 +8,6 @@ local CleveRoids = _G.CleveRoids or {}
 local CreateFrames = nil
 
 local Extension = CleveRoids.RegisterExtension("NotGrid")
-Extension.RegisterEvent("ADDON_LOADED", "OnLoad")
 
 function Extension.OnEnter()
     CleveRoids.SetMouseoverFrom("ngrid", this.unit)
@@ -39,7 +38,9 @@ function CleveRoids:NotGrid_CreateFrames()
     end
 end
 
-function Extension.OnLoad()
+function Extension.OnLoad() end
+
+function Extension.OnAddOnLoad()
     -- NotGrid loads before CleveRoids, so if NotGrid is enabled, then it's global will exist.
     if not NotGrid then
         return
@@ -48,7 +49,6 @@ function Extension.OnLoad()
     CreateFrames = NotGrid.CreateFrames
     NotGrid.CreateFrames = CleveRoids.NotGrid_CreateFrames
 
-    Extension.UnregisterEvent("ADDON_LOADED", "Onload")
 end
 
-_G["CleveRoids"] = CleveRoids
+EventUtil.ContinueOnAddOnLoaded("NotGrid", Extension.OnAddOnLoad)

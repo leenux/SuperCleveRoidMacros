@@ -15,22 +15,34 @@ CleveRoids.ComboPointTracking = CleveRoids.ComboPointTracking or {}
 -- Structure: CleveRoids_ComboDurations[spellID][comboPoints] = duration
 CleveRoids_ComboDurations = CleveRoids_ComboDurations or {}
 
--- Storage for last Rip cast (for Carnage talent mechanic)
--- Carnage talent: When Ferocious Bite procs Carnage, it refreshes Rip and Rake to their original duration
--- Detection: When combo points don't drop to 0 after FB (they stay at 1 = Carnage proc)
--- Talent Position: Tab 2 (Feral Combat), Talent 17
--- Rank 1: 10% per CP, Rank 2: 20% per CP
-CleveRoids.lastRipCast = CleveRoids.lastRipCast or {
-    duration = nil,
-    targetGUID = nil,
-    timestamp = 0
-}
+-- Family membership without hardcoded rank lists. C_Spell.GetSpellName resolves
+-- ANY spellID from the client's Spell.dbc -- every rank (so no enumeration or
+-- spellbook scan) and TWoW's custom spells alike -- so "is this spellID a Rip?"
+-- is just a name match against one seed rank. seedNameCache memoizes the seed's
+-- localized name (locale-safe: derived from the ID, not a hardcoded string; a
+-- seed absent from the DBC, e.g. a TWoW spell on a stock client, resolves to nil
+-- and the set simply never matches -- which is correct, that spell can't be cast).
+local seedNameCache = {}
+local function SeedName(seedID)
+    local n = seedNameCache[seedID]
+    if n == nil then
+        n = C_Spell.GetSpellName(seedID) or false
+        seedNameCache[seedID] = n
+    end
+    return n or nil
+end
 
-CleveRoids.lastRakeCast = CleveRoids.lastRakeCast or {
-    duration = nil,
-    targetGUID = nil,
-    timestamp = 0
-}
+-- Stand-in for a hardcoded {spellID=true,...} rank set: t[spellID] is true iff
+-- spellID is any rank of the family seeded by seedID. Same read shape as the old
+-- tables, so every membership consumer (`X and X[id]`) keeps working unchanged.
+-- Only valid for membership tests -- these are not iterable (pairs() sees empty).
+local function RankSet(seedID)
+    return setmetatable({}, { __index = function(_, spellID)
+        if type(spellID) ~= "number" then return nil end
+        local name = SeedName(seedID)
+        return (name and C_Spell.GetSpellName(spellID) == name) and true or nil
+    end })
+end
 
 -- Define spells that scale with combo points by SPELL ID and their duration formulas
 -- Duration = base + (combo_points - 1) * increment
@@ -57,10 +69,8 @@ CleveRoids.ComboScalingSpellsByID = {
     [9896] = { base = 10, increment = 2, name = "Rip" },           -- Rank 6
 }
 
--- Ferocious Bite spell IDs (for Carnage talent mechanic)
--- Carnage talent: When FB procs Carnage, refreshes Rip and Rake back to their original duration
--- Proc detection: combo points stay at 1 after FB instead of dropping to 0
--- Talent Position: Tab 2 (Feral Combat), Talent 17
+-- Ferocious Bite spell IDs. A combo-point finisher, so the cast-time combo
+-- snapshot has to know it.
 CleveRoids.FerociousBiteSpellIDs = {
     [22557] = true,  -- Rank 1
     [22568] = true,  -- Rank 2
@@ -68,33 +78,6 @@ CleveRoids.FerociousBiteSpellIDs = {
     [22828] = true,  -- Rank 4
     [22829] = true,  -- Rank 5
     [31018] = true,  -- Rank 6
-}
-
--- Rip spell IDs (for Carnage talent - refreshed when Carnage procs)
-CleveRoids.RipSpellIDs = {
-    [1079] = true,   -- Rank 1
-    [9492] = true,   -- Rank 2
-    [9493] = true,   -- Rank 3
-    [9752] = true,   -- Rank 4
-    [9894] = true,   -- Rank 5
-    [9896] = true,   -- Rank 6
-}
-
--- Rake spell IDs (for Carnage talent - refreshed when Carnage procs)
-CleveRoids.RakeSpellIDs = {
-    [1822] = true,   -- Rank 1
-    [1823] = true,   -- Rank 2
-    [1824] = true,   -- Rank 3
-    [9904] = true,   -- Rank 4
-}
-
--- Pounce Bleed spell IDs (for immunity detection - bleed portion of Pounce)
--- Note: Pounce (cast) TRIGGERS a separate Pounce Bleed spell with different IDs
--- Cast IDs: 9005, 9823, 9827 → Trigger Bleed IDs: 9007, 9824, 9826
-CleveRoids.PounceBleedSpellIDs = {
-    [9007] = true,   -- Rank 1 (triggered by Pounce 9005)
-    [9824] = true,   -- Rank 2 (triggered by Pounce 9823)
-    [9826] = true,   -- Rank 3 (triggered by Pounce 9827)
 }
 
 -- Combined table for all bleed spells that need immunity detection
@@ -132,14 +115,9 @@ CleveRoids.PounceToBleedMapping = {
 -- When Molten Blast hits, it refreshes Flame Shock duration on the target
 -- Detection: Monitor combat log for Molten Blast damage, then refresh Flame Shock
 -- =============================================================================
-CleveRoids.MoltenBlastSpellIDs = {
-    [36916] = true,  -- Rank 1
-    [36917] = true,  -- Rank 2
-    [36918] = true,  -- Rank 3
-    [36919] = true,  -- Rank 4
-    [36920] = true,  -- Rank 5
-    [36921] = true,  -- Rank 6
-}
+-- TWoW custom; seed resolves on the TWoW client (nil/never-matches on stock,
+-- where Molten Blast can't be cast anyway).
+CleveRoids.MoltenBlastSpellIDs = RankSet(36916)
 
 CleveRoids.FlameShockSpellIDs = {
     [8050] = true,   -- Rank 1
@@ -154,12 +132,7 @@ CleveRoids.FlameShockSpellIDs = {
 -- WARLOCK: Conflagrate → Immolate Duration Reduction
 -- When Conflagrate is cast, it reduces Immolate duration by 3 seconds
 -- =============================================================================
-CleveRoids.ConflagrateSpellIDs = {
-    [17962] = true,  -- Rank 1
-    [18930] = true,  -- Rank 2
-    [18931] = true,  -- Rank 3
-    [18932] = true,  -- Rank 4
-}
+CleveRoids.ConflagrateSpellIDs = RankSet(17962)
 
 CleveRoids.ImmolateSpellIDs = {
     [348] = true,    -- Rank 1
@@ -170,17 +143,6 @@ CleveRoids.ImmolateSpellIDs = {
     [11667] = true,  -- Rank 6
     [11668] = true,  -- Rank 7
     [25309] = true,  -- Rank 8
-}
-
--- =============================================================================
--- WARLOCK: Dark Harvest Duration Acceleration (TWoW Custom)
--- Channeled spell that accelerates DoT tick rate by 30% while channeling
--- Complex tracking: debuff expires 30% faster while Dark Harvest is active
--- =============================================================================
-CleveRoids.DarkHarvestSpellIDs = {
-    [52550] = true,  -- Rank 1
-    [52551] = true,  -- Rank 2
-    [52552] = true,  -- Rank 3
 }
 
 -- =============================================================================
@@ -489,7 +451,7 @@ function CleveRoids.TrackComboPointCastByID(spellID, targetGUID)
             end
         else
             -- Second, check if name-based tracking has recent data for this spell
-            local spellName = GetSpellRecField(spellID, "name")
+            local spellName = C_Spell.GetSpellName(spellID)
             if spellName then
                 -- Remove rank info for comparison
                 local baseName = CleveRoids.StripRank(spellName)
@@ -546,26 +508,6 @@ function CleveRoids.TrackComboPointCastByID(spellID, targetGUID)
     end
 
     return duration
-end
-
--- API function to get last tracked combo points for a spell
-function CleveRoids.GetLastComboPointsForSpell(spellName)
-    if CleveRoids.ComboPointTracking[spellName] then
-        return CleveRoids.ComboPointTracking[spellName].combo_points
-    elseif CleveRoids.spell_tracking[spellName] then
-        return CleveRoids.spell_tracking[spellName].last_combo_points
-    end
-    return nil
-end
-
--- API function to get last calculated duration for a spell
-function CleveRoids.GetLastDurationForSpell(spellName)
-    if CleveRoids.ComboPointTracking[spellName] then
-        return CleveRoids.ComboPointTracking[spellName].duration
-    elseif CleveRoids.spell_tracking[spellName] then
-        return CleveRoids.spell_tracking[spellName].last_duration
-    end
-    return nil
 end
 
 -- Utility function to display current combo tracking info
@@ -683,7 +625,7 @@ if _G.UseAction then
         local spellName = nil
 
         if actionType == "SPELL" and actionID then
-            spellName = GetSpellRecField(actionID, "name")
+            spellName = C_Spell.GetSpellName(actionID)
         end
 
         if currentCP and currentCP > 0 then
@@ -772,7 +714,7 @@ function Extension.OnLoad()
     Extension.RegisterEvent("SPELLCAST_FAILED", "OnSpellcastFailed")
     Extension.RegisterEvent("SPELLCAST_INTERRUPTED", "OnSpellcastInterrupted")
     Extension.RegisterEvent("PLAYER_TARGET_CHANGED", "OnTargetChanged")
-    Extension.RegisterEvent("UNIT_AURA", "OnUnitAura")
+    Extension.RegisterUnitEvent("UNIT_AURA", "OnUnitAura", "target", "player")
     Extension.RegisterEvent("PLAYER_COMBO_POINTS", "OnComboPointsChanged")
 
     -- PERFORMANCE OPTIMIZATION: Removed OnUpdate polling for combo points
@@ -792,63 +734,14 @@ function Extension.OnTargetChanged()
     CleveRoids.UpdateComboPoints()
 end
 
+-- Registered as a unit event for target and player, so arg1 is always one of
+-- those two -- no token check needed.
 function Extension.OnUnitAura()
-    if arg1 == "target" or arg1 == "player" then
-        CleveRoids.UpdateComboPoints()
-    end
+    CleveRoids.UpdateComboPoints()
 end
 
 function Extension.OnComboPointsChanged()
     CleveRoids.UpdateComboPoints()
-
-    -- CARNAGE PROC DETECTION (Cursive-style)
-    -- When Ferocious Bite is used, combo points should drop to 0
-    -- If Carnage procs, combo points will be 1 instead (the Carnage-granted combo point)
-    -- Check: After Ferocious Bite (within 0.5s), if combo points > 0, Carnage procced
-    if CleveRoids.lastFerociousBiteTime and CleveRoids.lastFerociousBiteTargetGUID then
-        local timeSinceBite = GetTime() - CleveRoids.lastFerociousBiteTime
-        if timeSinceBite < 0.5 then
-            local currentCP = CleveRoids.GetComboPoints()
-            if currentCP > 0 then
-                -- Carnage procced! Combo points didn't drop to 0 (or rose back to 1)
-                if CleveRoids.debug then
-                    DEFAULT_CHAT_FRAME:AddMessage(
-                        string.format("|cffff00ff[Carnage]|r PROC DETECTED! CP=%d after Ferocious Bite (%.2fs ago)",
-                            currentCP, timeSinceBite)
-                    )
-                end
-
-                -- Apply the Carnage refresh to Rip and Rake
-                local targetGUID = CleveRoids.lastFerociousBiteTargetGUID
-                local targetName = CleveRoids.lastFerociousBiteTargetName or "Unknown"
-                local biteSpellID = CleveRoids.lastFerociousBiteSpellID
-
-                -- Call the Carnage refresh function in Utility.lua
-                if CleveRoids.libdebuff and CleveRoids.libdebuff.ApplyCarnageRefresh then
-                    CleveRoids.libdebuff.ApplyCarnageRefresh(targetGUID, targetName, biteSpellID)
-                end
-
-                -- Clear the tracking to prevent multiple refreshes
-                CleveRoids.lastFerociousBiteTime = nil
-                CleveRoids.lastFerociousBiteTargetGUID = nil
-                CleveRoids.lastFerociousBiteTargetName = nil
-                CleveRoids.lastFerociousBiteSpellID = nil
-            end
-        else
-            -- Time window expired, clear tracking
-            if CleveRoids.lastFerociousBiteTime then
-                if CleveRoids.debug then
-                    DEFAULT_CHAT_FRAME:AddMessage(
-                        string.format("|cffff00ff[Carnage]|r No proc - time window expired (%.2fs)", timeSinceBite)
-                    )
-                end
-                CleveRoids.lastFerociousBiteTime = nil
-                CleveRoids.lastFerociousBiteTargetGUID = nil
-                CleveRoids.lastFerociousBiteTargetName = nil
-                CleveRoids.lastFerociousBiteSpellID = nil
-            end
-        end
-    end
 end
 
 -- Event handlers

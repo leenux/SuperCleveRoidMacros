@@ -55,15 +55,14 @@ function CleveRoids.GetCachedPlayerHealthPercent()
 end
 
 function CleveRoids.GetCachedPlayerPowerPercent()
-    local API = CleveRoids.NampowerAPI
-    local power = API and API.GetUnitPower and API.GetUnitPower("player") or UnitMana("player")
-    local max = API and API.GetUnitMaxPower and API.GetUnitMaxPower("player") or UnitManaMax("player")
+    local API = CleveRoids.ClassicAPI
+    local power = API.UnitPower("player")
+    local max = API.UnitPowerMax("player")
     return max > 0 and (100 * power / max) or 0
 end
 
 function CleveRoids.GetCachedPlayerPower()
-    local API = CleveRoids.NampowerAPI
-    return API and API.GetUnitPower and API.GetUnitPower("player") or UnitMana("player")
+    return CleveRoids.ClassicAPI.UnitPower("player")
 end
 
 function CleveRoids.GetCachedTargetHealthPercent()
@@ -105,7 +104,7 @@ local function BuildSpellNameCache()
 
     if lib.personalDebuffs then
         for sid, _ in pairs(lib.personalDebuffs) do
-            local name = GetSpellRecField(sid, "name")
+            local name = C_Spell.GetSpellName(sid)
             if name then
                 name = CleveRoids.StripRank(name)
                 if not _spellNameToIDs[name] then
@@ -118,7 +117,7 @@ local function BuildSpellNameCache()
 
     if lib.sharedDebuffs then
         for sid, _ in pairs(lib.sharedDebuffs) do
-            local name = GetSpellRecField(sid, "name")
+            local name = C_Spell.GetSpellName(sid)
             if name then
                 name = CleveRoids.StripRank(name)
                 if not _spellNameToIDs[name] then
@@ -163,7 +162,7 @@ local function GetSpellIDForRank(baseName, rankNum)
     if not matchIDs then return nil end
     local targetRank = "Rank " .. rankNum
     for _, sid in ipairs(matchIDs) do
-        local rank = GetSpellRecField and GetSpellRecField(sid, "rank")
+        local rank = C_Spell.GetSpellSubtext(sid)
         if rank and rank == targetRank then
             return sid
         end
@@ -196,109 +195,6 @@ local function IsSharedDebuffByIdOrName(lib, spellID, debuffName)
         end
     end
     return false
-end
-
--- PERFORMANCE: Equipment cache for HasGearEquipped (avoids 19-slot scan per call)
--- Invalidated on UNIT_INVENTORY_CHANGED via CleveRoids.InvalidateEquipmentCache()
--- Enhanced with Nampower v2.18+ GetEquippedItems when available
-local _equippedItemIDs = {}      -- [slot] = itemID (number)
-local _equippedItemNames = {}    -- [slot] = itemName (lowercase string)
-local _equipmentCacheValid = false
-
--- Track if we've warned about GetEquippedItems errors (warn once per session)
-local _getEquippedItemsErrorWarned = false
-
-local function BuildEquipmentCache()
-    if _equipmentCacheValid then return end
-    _equipmentCacheValid = true
-
-    -- Clear old data
-    for i = 1, 19 do
-        _equippedItemIDs[i] = nil
-        _equippedItemNames[i] = nil
-    end
-
-    local string_find = string.find
-    local string_lower = string.lower
-
-    -- Try Nampower GetEquippedItems for faster enumeration
-    -- Requires v2.22+ because earlier versions (e.g., v2.19.1) have internal bug
-    local API = CleveRoids.NampowerAPI
-    local hasValidNampower = API and API.HasMinimumVersion and API.HasMinimumVersion(2, 22, 0)
-
-    if hasValidNampower and GetEquippedItems then
-        -- Use pcall to catch any internal Nampower errors and fall back gracefully
-        local success, result = pcall(GetEquippedItems, "player")
-
-        if not success then
-            -- Log the error once per session for debugging
-            if not _getEquippedItemsErrorWarned then
-                _getEquippedItemsErrorWarned = true
-                local errMsg = tostring(result)
-                if CleveRoids.Print then
-                    CleveRoids.Print("|cffff6600Warning:|r GetEquippedItems failed: " .. errMsg)
-                    CleveRoids.Print("Using fallback equipment detection. Consider updating Nampower.")
-                end
-            end
-            -- Fall through to manual enumeration
-        elseif result and type(result) == "table" then
-            local usedNampower = false
-            for nampowerSlot, itemInfo in pairs(result) do
-                -- Nampower uses 0-indexed slots, WoW API uses 1-indexed
-                -- tonumber() handles both string and numeric keys from different Nampower versions
-                -- Skip non-numeric keys (metadata fields, etc.)
-                local slotNum = tonumber(nampowerSlot)
-                if slotNum and type(itemInfo) == "table" and itemInfo.itemId then
-                    local slot = slotNum + 1
-                    -- itemInfo must be a table to access .itemId (userdata from some Nampower versions is not indexable)
-                    if slot >= 1 and slot <= 19 then
-                        _equippedItemIDs[slot] = itemInfo.itemId
-                        usedNampower = true
-
-                        -- Get item name via Nampower API or GetItemInfo
-                        local itemName = API and API.GetItemName and API.GetItemName(itemInfo.itemId)
-                        if not itemName then
-                            itemName = GetItemInfo(itemInfo.itemId)
-                        end
-                        if itemName then
-                            _equippedItemNames[slot] = string_lower(itemName)
-                        end
-                    end
-                end
-            end
-            if usedNampower then
-                return  -- Done with Nampower path
-            end
-            -- Fall through to manual enumeration if Nampower returned userdata items
-        end
-    end
-
-    -- Fallback: manual slot enumeration
-    for slot = 1, 19 do
-        local link = GetInventoryItemLink("player", slot)
-        if link then
-            local _, _, id = string_find(link, "item:(%d+)")
-            local _, _, nameInBrackets = string_find(link, "%[(.+)%]")
-
-            if id then
-                _equippedItemIDs[slot] = tonumber(id)
-            end
-            if nameInBrackets then
-                _equippedItemNames[slot] = string_lower(nameInBrackets)
-            elseif id then
-                -- Fallback: resolve via GetItemInfo
-                local itemName = GetItemInfo(tonumber(id))
-                if itemName then
-                    _equippedItemNames[slot] = string_lower(itemName)
-                end
-            end
-        end
-    end
-end
-
--- Invalidate equipment cache (call on UNIT_INVENTORY_CHANGED)
-function CleveRoids.InvalidateEquipmentCache()
-    _equipmentCacheValid = false
 end
 
 -- ============================================================================
@@ -350,8 +246,7 @@ function CleveRoids.FindItemLocation(item)
     if numericItem then
         -- Check if it's an equipment slot (1-19)
         if numericItem >= 1 and numericItem <= 19 then
-            local link = GetInventoryItemLink("player", numericItem)
-            if link then
+            if GetInventoryItemID("player", numericItem) then
                 return { type = "inventory", inventoryID = numericItem }
             end
             return nil
@@ -403,72 +298,34 @@ function CleveRoids.HasItemCached(item)
     return CleveRoids.FindItemLocation(item) ~= nil
 end
 
--- Fast item cooldown lookup using cache
--- Enhanced with Nampower v2.18+ GetItemIdCooldown for detailed info
--- @param item: item ID (number) or item name (string)
--- @return remainingSeconds, totalDuration, enabled
-function CleveRoids.GetItemCooldownCached(item)
-    local location = CleveRoids.FindItemLocation(item)
-    if not location then
-        return 0, 0, 0
-    end
-
-    -- Try Nampower v2.18+ GetItemIdCooldown for more detailed info
-    -- This requires knowing the item ID
-    if GetItemIdCooldown then
-        local itemId = nil
-
-        -- Get item ID from location or input
-        if location.itemData and location.itemData.id then
-            itemId = location.itemData.id
-        elseif type(item) == "number" and item > 19 then
-            itemId = item
-        else
-            -- Extract item ID from inventory/bag link
-            local link
-            if location.type == "inventory" then
-                link = GetInventoryItemLink("player", location.inventoryID)
-            else
-                link = GetContainerItemLink(location.bag, location.slot)
-            end
-            if link then
-                local _, _, id = string.find(link, "item:(%d+)")
-                if id then itemId = tonumber(id) end
-            end
-        end
-
-        if itemId then
-            local cdInfo = GetItemIdCooldown(itemId)
-            if cdInfo then
-                local remaining = (cdInfo.cooldownRemainingMs or 0) / 1000
-                local duration = (cdInfo.individualDurationMs or cdInfo.categoryDurationMs or 0) / 1000
-                local enabled = (cdInfo.isOnCooldown == 1) and 1 or 0
-                return remaining, duration, enabled
-            end
-        end
-    end
-
-    -- Fallback to standard WoW API
-    local start, duration, enable
-    if location.type == "inventory" then
-        start, duration, enable = GetInventoryItemCooldown("player", location.inventoryID)
-    else
-        start, duration, enable = GetContainerItemCooldown(location.bag, location.slot)
-    end
-
-    -- Normalize cooldown values
+-- Normalize a (startTime, duration, enable) cooldown triple to
+-- (remainingSeconds, totalDuration, enabled).
+local function NormalizeCooldown(start, duration, enable)
     start = tonumber(start) or 0
     duration = tonumber(duration) or 0
     enable = tonumber(enable) or 0
-
     if duration <= 0 or start <= 0 then
         return 0, 0, enable
     end
-
     local remaining = (start + duration) - GetTime()
     if remaining < 0 then remaining = 0 end
-
     return remaining, duration, enable
+end
+
+-- Item cooldown lookup. Equipment-slot numbers (1-19) query the inventory slot;
+-- everything else resolves through ClassicAPI's GetItemCooldown, which takes an
+-- item id/name directly (the item's ON_USE cooldown) with no bag/slot lookup.
+-- @param item: item ID (number), item name (string), or equipment slot (1-19)
+-- @return remainingSeconds, totalDuration, enabled
+function CleveRoids.GetItemCooldownCached(item)
+    if not item then return 0, 0, 0 end
+
+    local numericItem = tonumber(item)
+    if numericItem and numericItem >= 1 and numericItem <= 19 then
+        return NormalizeCooldown(GetInventoryItemCooldown("player", numericItem))
+    end
+
+    return NormalizeCooldown(GetItemCooldown(item))
 end
 
 --This table maps stat keys to the functions that retrieve their values.
@@ -490,24 +347,26 @@ local stat_checks = {
     attackpower = function() local base, pos, neg = UnitAttackPower("player"); return base + pos + neg end,
     rap = function() local base, pos, neg = UnitRangedAttackPower("player"); return base + pos + neg end,
     rangedattackpower = function() local base, pos, neg = UnitRangedAttackPower("player"); return base + pos + neg end,
-    healing = function() local _, h = CleveRoids.NampowerAPI.GetSpellPower(); return h or 0 end,
-    healingpower = function() local _, h = CleveRoids.NampowerAPI.GetSpellPower(); return h or 0 end,
+    healing = function() return CleveRoids.ClassicAPI.GetSpellBonusHealing() or 0 end,
+    healingpower = function() return CleveRoids.ClassicAPI.GetSpellBonusHealing() or 0 end,
 
-    -- Bonus Spell Damage by School (Nampower v2.31+ GetSpellPower)
-    -- GetSpellPower() returns: physical, holy, fire, nature, frost, shadow, arcane
-    arcane_power = function() return select(7, CleveRoids.NampowerAPI.GetSpellPower()) or 0 end,
-    fire_power = function() return select(3, CleveRoids.NampowerAPI.GetSpellPower()) or 0 end,
-    frost_power = function() return select(5, CleveRoids.NampowerAPI.GetSpellPower()) or 0 end,
-    nature_power = function() return select(4, CleveRoids.NampowerAPI.GetSpellPower()) or 0 end,
-    shadow_power = function() return select(6, CleveRoids.NampowerAPI.GetSpellPower()) or 0 end,
+    -- Bonus Spell Damage by School (ClassicAPI GetSpellBonusDamage)
+    -- school: 1=Physical, 2=Holy, 3=Fire, 4=Nature, 5=Frost, 6=Shadow, 7=Arcane
+    arcane_power = function() return CleveRoids.ClassicAPI.GetSpellBonusDamage(7) or 0 end,
+    fire_power = function() return CleveRoids.ClassicAPI.GetSpellBonusDamage(3) or 0 end,
+    frost_power = function() return CleveRoids.ClassicAPI.GetSpellBonusDamage(5) or 0 end,
+    nature_power = function() return CleveRoids.ClassicAPI.GetSpellBonusDamage(4) or 0 end,
+    shadow_power = function() return CleveRoids.ClassicAPI.GetSpellBonusDamage(6) or 0 end,
 
     -- Highest spell power across all schools
     spell_power = function()
-        local p, h, fi, n, fr, s, a = CleveRoids.NampowerAPI.GetSpellPower()
-        if p then
-            return math.max(p, h, fi, n, fr, s, a)
+        local API = CleveRoids.ClassicAPI
+        local best = 0
+        for s = 1, 7 do
+            local v = API.GetSpellBonusDamage(s) or 0
+            if v > best then best = v end
         end
-        return 0
+        return best
     end,
 
     -- Defensive Stats
@@ -920,14 +779,6 @@ CleveRoids.DownrankBlocked = CleveRoids.DownrankBlocked or {}
 function CleveRoids.GetAuraTrackingData(targetGuid)
     if not targetGuid then return nil, false end
 
-    -- pfUI path: read directly from pfUI's table (has downrank protection built-in)
-    if CleveRoids.hasPfUI76 and pfUI and pfUI.libdebuff_all_auras then
-        local data = pfUI.libdebuff_all_auras[targetGuid]
-        if data then return data, true end
-        -- Fall through: our table may have test entries even when pfUI is active
-    end
-
-    -- Standalone path (or pfUI had no data for this GUID)
     local data = CleveRoids.AllCasterAuraTracking[targetGuid]
     if data then return data, false end
     return nil, false
@@ -962,7 +813,7 @@ function CleveRoids.GetAllCasterAuraTimeRemaining(targetGuid, spellId)
     local targetData, isPfUI = CleveRoids.GetAuraTrackingData(targetGuid)
     if not targetData then return nil end
 
-    local spellName = GetSpellRecField and GetSpellRecField(spellId, "name")
+    local spellName = C_Spell.GetSpellName(spellId)
     if not spellName then return nil end
 
     local casters = targetData[spellName]
@@ -993,74 +844,6 @@ function CleveRoids.GetAllCasterAuraTimeRemaining(targetGuid, spellId)
         end
     end
     return nil
-end
-
--- Helper to find aura by name (or spell ID string) for a target
--- Returns player's entry for personal debuffs, any caster for shared auras.
--- Reads from pfUI.libdebuff_all_auras when pfUI 7.6+ is active.
-function CleveRoids.FindAllCasterAuraByName(targetGuid, searchName)
-    if not targetGuid or not searchName then return nil, nil end
-    local targetData, isPfUI = CleveRoids.GetAuraTrackingData(targetGuid)
-    if not targetData then return nil, nil end
-
-    -- Resolve spell ID to name for direct lookup
-    local searchID = tonumber(searchName)
-    if searchID then
-        local resolvedName = GetSpellRecField and GetSpellRecField(searchID, "name")
-        if not resolvedName then return nil, nil end
-        searchName = resolvedName
-    end
-
-    local now = GetTime()
-
-    -- Try exact match first (O(1) hash lookup)
-    local casters = targetData[searchName]
-
-    -- Case-insensitive fallback
-    if not casters then
-        local searchLower = string.lower(searchName)
-        for spellName, c in pairs(targetData) do
-            local baseName = CleveRoids.StripRank(spellName)
-            if string.lower(baseName) == searchLower then
-                casters = c
-                break
-            end
-        end
-    end
-
-    if not casters then return nil, nil end
-
-    local playerGuid = CleveRoids.GetGUID("player")
-
-    -- Always check player's own entry first
-    if playerGuid and casters[playerGuid] then
-        local auraData = casters[playerGuid]
-        local startTime = AuraStart(auraData, isPfUI)
-        if startTime and auraData.duration then
-            local remaining = auraData.duration + startTime - now
-            if remaining > 0 then return remaining, playerGuid end
-        end
-    end
-
-    -- Get a spellId from any entry to check personal vs shared
-    local anySpellId = nil
-    for _, aData in pairs(casters) do
-        anySpellId = aData.spellId
-        break
-    end
-
-    -- Personal debuff and player has no active entry → don't use other players' data
-    if IsPersonalAura(anySpellId, searchName) then return nil, nil end
-
-    -- Shared aura: return any active caster's entry
-    for cGuid, auraData in pairs(casters) do
-        local startTime = AuraStart(auraData, isPfUI)
-        if startTime and auraData.duration then
-            local remaining = auraData.duration + startTime - now
-            if remaining > 0 then return remaining, cGuid end
-        end
-    end
-    return nil, nil
 end
 
 -- HitInfo bitfield values (from NampowerAPI.lua, duplicated for local access)
@@ -1114,43 +897,6 @@ local function OnAutoAttackOther(attackerGuid, targetGuid, totalDamage, hitInfo,
     CleveRoids.LastSwing.resistAmount = totalResist or 0
     CleveRoids.LastSwing.targetGuid = targetGuid
 
-    -- Paladin: refresh active Judgements on melee hit (Nampower fallback for UNIT_CASTEVENT)
-    if CleveRoids.playerClass == "PALADIN" and targetGuid then
-        local lib = type(CleveRoids.libdebuff) == "table" and CleveRoids.libdebuff or nil
-        if lib and lib.objects then
-            local normalizedTarget = CleveRoids.NormalizeGUID(targetGuid)
-            if normalizedTarget and lib.objects[normalizedTarget] then
-                for spellID, rec in pairs(lib.objects[normalizedTarget]) do
-                    if lib.judgementSpells and lib.judgementSpells[spellID] and rec.start and rec.duration then
-                        local remaining = rec.duration + rec.start - GetTime()
-                        if remaining > 0 and rec.caster == "player" then
-                            rec.start = GetTime()
-
-                            if CleveRoids.debug then
-                                local spellName = GetSpellRecField and GetSpellRecField(spellID, "name") or "Unknown"
-                                local baseName = CleveRoids.StripRank(spellName) or "Unknown"
-                                DEFAULT_CHAT_FRAME:AddMessage(
-                                    string.format("|cff00ffaa[Judgement Refresh]|r Refreshed %s (ID:%d) on melee hit - new duration: %ds",
-                                        baseName, spellID, rec.duration)
-                                )
-                            end
-
-                            -- Sync to pfUI if loaded (pre-7.6 only)
-                            if not CleveRoids.hasPfUI76 and pfUI and pfUI.api and pfUI.api.libdebuff then
-                                local spellName = GetSpellRecField and GetSpellRecField(spellID, "name") or nil
-                                local baseName = CleveRoids.StripRank(spellName)
-                                local targetName = (lib.guidToName and lib.guidToName[normalizedTarget]) or UnitName("target")
-                                local targetLevel = UnitLevel("target") or 0
-                                if targetName and baseName then
-                                    pfUI.api.libdebuff:AddEffect(targetName, targetLevel, baseName, rec.duration, "player")
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
 end
 
 -- Process AUTO_ATTACK_SELF event (player being attacked)
@@ -1278,31 +1024,11 @@ local function OnAuraCastSelf(spellId, casterGuid, targetGuid, effect, effectAur
         end
     end
 
-    -- NEW: Populate ownBuffCasts and allBuffAuras for all player buffs (not just overflow)
-    -- Use the isBuffNotDebuff result determined above (avoids redundant slot scanning)
-    local lib = CleveRoids.libdebuff
-    if isBuffNotDebuff and spellId and durationMs and durationMs > 0 and lib and not lib.hasPfUIEnhanced then
-        local spellName = GetSpellRecField and GetSpellRecField(spellId, "name")
-        if spellName then
-            local playerGuid = CleveRoids.GetGUID("player")
-            if playerGuid then
-                lib.ownBuffCasts[playerGuid] = lib.ownBuffCasts[playerGuid] or {}
-                lib.ownBuffCasts[playerGuid][spellName] = {
-                    startTime  = now,
-                    duration   = durationMs / 1000,
-                    spellId    = spellId,
-                    casterGuid = casterGuid,
-                }
-                lib.allBuffAuras[playerGuid] = lib.allBuffAuras[playerGuid] or {}
-                lib.allBuffAuras[playerGuid][spellName] = lib.allBuffAuras[playerGuid][spellName] or {}
-                lib.allBuffAuras[playerGuid][spellName][casterGuid or "unknown"] = {
-                    startTime = now,
-                    duration  = durationMs / 1000,
-                    rank      = 0,
-                }
-            end
-        end
-    end
+    -- Removed: this populated lib.ownBuffCasts and lib.allBuffAuras for every player
+    -- buff. Both tables were write-only -- populated here and on BUFF_ADDED_OTHER,
+    -- swept periodically, cleared on removal and death, and never read for aura state.
+    -- Player buff timing now comes from C_UnitAuras, which reads expirationTime out of
+    -- the engine's own player-buff table.
 end
 
 local function OnAuraCastOther(spellId, casterGuid, targetGuid, effect, effectAuraName,
@@ -1315,8 +1041,8 @@ local function OnAuraCastOther(spellId, casterGuid, targetGuid, effect, effectAu
     -- When pfUI enhanced is active, pfUI writes to pfUI.libdebuff_all_auras with
     -- full downrank protection — we read from that table via GetAuraTrackingData().
     if spellId and durationMs and durationMs > 0 then
-        local spellName = GetSpellRecField and GetSpellRecField(spellId, "name")
-        if spellName and not CleveRoids.hasPfUI76 then
+        local spellName = C_Spell.GetSpellName(spellId)
+        if spellName then
             CleveRoids._allCasterAuraDirty = true
             if not CleveRoids.AllCasterAuraTracking[targetGuid] then
                 CleveRoids.AllCasterAuraTracking[targetGuid] = {}
@@ -1339,7 +1065,7 @@ local function OnAuraCastOther(spellId, casterGuid, targetGuid, effect, effectAu
                                 string.format("|cffff6600[AuraTrack]|r %s Rank %d blocked by Rank %d (%.1fs left) on %s",
                                     spellName, newRank, existingRank, timeleft,
                                     string.sub(tostring(targetGuid), 1, 16)))
-                            spellName = nil  -- skip pendingBuffCasts below too
+                            spellName = nil  -- downranked: don't record this cast
                         end
                     end
                 end
@@ -1369,24 +1095,6 @@ local function OnAuraCastOther(spellId, casterGuid, targetGuid, effect, effectAu
                     string.sub(tostring(casterGuid), 1, 16), durationMs / 1000))
         end
 
-        -- Store in pendingBuffCasts for BUFF_ADDED_OTHER to confirm as buff
-        -- (AURA_CAST_ON_OTHER fires for both buffs and debuffs; BUFF_ADDED_OTHER confirms buff)
-        local lib = CleveRoids.libdebuff
-        if lib and not lib.hasPfUIEnhanced then
-            local spellNameForPending = GetSpellRecField and GetSpellRecField(spellId, "name")
-            if spellNameForPending then
-                local normTargetGuid = CleveRoids.NormalizeGUID(targetGuid)
-                if normTargetGuid then
-                    lib.pendingBuffCasts[normTargetGuid] = lib.pendingBuffCasts[normTargetGuid] or {}
-                    lib.pendingBuffCasts[normTargetGuid][spellId] = {
-                        casterGuid = CleveRoids.NormalizeGUID(casterGuid),
-                        duration   = durationMs / 1000,
-                        spellName  = spellNameForPending,
-                        time       = now,
-                    }
-                end
-            end
-        end
     end
 
     -- Store cap status for this target GUID (if available)
@@ -1402,14 +1110,7 @@ local function OnAuraCastOther(spellId, casterGuid, targetGuid, effect, effectAu
         entry.timestamp = now
     end
 
-    -- Cleanup moved to CleveRoids.CleanupAuraTracking(), called by UnitXP timer when available
-    -- Fallback: inline throttled cleanup when UnitXP is not present
-    if not CleveRoids.hasUnitXP then
-        if (now - CleveRoids.AuraCapStatus.lastCleanupTime) >= 5 then
-            CleveRoids.AuraCapStatus.lastCleanupTime = now
-            CleveRoids.CleanupAuraTracking(now)
-        end
-    end
+    -- Periodic cleanup runs on a C_Timer ticker (see CleanupAuraTracking below).
 end
 
 --- Periodic cleanup of AuraCapStatus and AllCasterAuraTracking tables
@@ -1469,16 +1170,11 @@ function CleveRoids.CleanupAuraTracking(now)
     end
 end
 
--- UnitXP threaded timer for aura tracking cleanup (5s interval)
--- Replaces inline cleanup that ran on every aura event
-if CleveRoids.hasUnitXP then
-    function CleveRoids_AuraTrackingCleanupTimer()
-        if CleveRoids.isShuttingDown then return end
-        CleveRoids.CleanupAuraTracking()
-    end
-
-    CleveRoids._auraCleanupTimerId = UnitXP("timer", "arm", 5000, 5000, "CleveRoids_AuraTrackingCleanupTimer")
-end
+-- Periodic aura-tracking cleanup via ClassicAPI's C_Timer (every 5s).
+CleveRoids._auraCleanupTicker = C_Timer.NewTicker(5, function()
+    if CleveRoids.isShuttingDown then return end
+    CleveRoids.CleanupAuraTracking()
+end)
 
 -- Create frame to listen for Nampower auto-attack and aura events
 local autoAttackFrame = CreateFrame("Frame", "CleveRoidsAutoAttackFrame")
@@ -1530,8 +1226,8 @@ autoAttackFrame:SetScript("OnEvent", function()
 
         if spellId and spellId > 0 and durationMs and durationMs > 0 then
             local playerGUID = CleveRoids.GetGUID("player")
-            local durSpellName = GetSpellRecField and GetSpellRecField(spellId, "name")
-            if playerGUID and durSpellName and not CleveRoids.hasPfUI76 then
+            local durSpellName = C_Spell.GetSpellName(spellId)
+            if playerGUID and durSpellName then
                 CleveRoids._allCasterAuraDirty = true
                 if not CleveRoids.AllCasterAuraTracking[playerGUID] then
                     CleveRoids.AllCasterAuraTracking[playerGUID] = {}
@@ -1582,7 +1278,7 @@ autoAttackFrame:SetScript("OnEvent", function()
         local state = arg7
         if state == 2 then return end  -- Stack change, not full removal
         if guid and spellId and CleveRoids.AllCasterAuraTracking[guid] then
-            local removedName = GetSpellRecField and GetSpellRecField(spellId, "name")
+            local removedName = C_Spell.GetSpellName(spellId)
             if removedName and CleveRoids.AllCasterAuraTracking[guid][removedName] then
                 CleveRoids.AllCasterAuraTracking[guid][removedName] = nil
                 if not next(CleveRoids.AllCasterAuraTracking[guid]) then
@@ -1596,6 +1292,70 @@ end)
 -- ============================================================================
 -- VALIDATION FUNCTIONS FOR AUTO-ATTACK CONDITIONALS
 -- ============================================================================
+
+-- Record a successful player cast for [lastcast] gating.
+-- Stores under lowercase spell name and "spell:<id>" so either form works.
+function CleveRoids.RecordLastCast(spellId, spellName)
+    if not spellId and (not spellName or spellName == "") then return end
+    CleveRoids.lastCastTimes = CleveRoids.lastCastTimes or {}
+    local now = GetTime()
+    if spellId and spellId > 0 then
+        CleveRoids.lastCastTimes["spell:" .. spellId] = now
+        if not spellName or spellName == "" then
+            spellName = C_Spell and C_Spell.GetSpellName and C_Spell.GetSpellName(spellId)
+        end
+    end
+    if spellName and spellName ~= "" then
+        local base = string.gsub(spellName, "%s*%(%s*Rank%s+%d+%s*%)", "")
+        CleveRoids.lastCastTimes[string.lower(CleveRoids.NormalizeName(base))] = now
+    end
+end
+
+-- Seconds since last successful cast of spell key, or a large number if never cast.
+-- spellKey must already be "spell:<id>" or lowercase normalized name.
+function CleveRoids.GetLastCastElapsed(spellKey)
+    if not spellKey or spellKey == "" then return 1e9 end
+    local times = CleveRoids.lastCastTimes
+    local ts = times and times[spellKey]
+    if not ts then return 1e9 end
+    return CleveRoids.GetCachedTime() - ts
+end
+
+-- [lastcast:Spell>60] / [lastcast:>60] — elapsed seconds since last successful cast.
+-- Never cast → elapsed is treated as huge (so >N passes, <N fails).
+function CleveRoids.ValidateLastCast(args)
+    if not args then return false end
+
+    local name, operator, amount
+    if type(args) == "table" then
+        name, operator, amount = args.name, args.operator, args.amount
+    elseif type(args) == "string" then
+        name = args
+    else
+        return false
+    end
+
+    if not name or name == "" then return false end
+
+    local key
+    local _, _, sid = string.find(name, "^spell:(%d+)$")
+    if sid then
+        key = "spell:" .. sid
+    else
+        key = string.lower(CleveRoids.NormalizeName(name))
+    end
+
+    local elapsed = CleveRoids.GetLastCastElapsed(key)
+
+    if not operator or amount == nil then
+        -- Bare [lastcast:Spell] — true if that spell has been cast at least once
+        return elapsed < 1e9
+    end
+    if CleveRoids.operators[operator] then
+        return CleveRoids.comparators[operator](elapsed, amount)
+    end
+    return false
+end
 
 -- Validate lastswing conditional
 -- swingType: "crit", "glancing", "miss", "dodge", "parry", "blocked", "offhand", or time comparison
@@ -1938,7 +1698,7 @@ local function IsPendingDebuffCast(spellName, targetUnit)
                 if arr then
                     for _, pending in pairs(arr) do
                         if pending and pending.targetGUID == targetGuid and pending.spellID then
-                            local pendingName = GetSpellRecField and GetSpellRecField(pending.spellID, "name")
+                            local pendingName = C_Spell.GetSpellName(pending.spellID)
                             if pendingName then
                                 local normalizedPending = NormalizeSpellNameForComparison(pendingName)
                                 if normalizedPending == normalizedCheck then
@@ -1991,6 +1751,13 @@ local function _get_debuff_timeleft(unitToken, auraName)
     return nil, nil
 end
 
+-- Friendly for [help]: UnitCanAssist OR UnitIsFriend.
+-- Target dummies / totems / some NPCs are green (UnitIsFriend) but UnitCanAssist is false.
+function CleveRoids.IsHelpUnit(target)
+    if not target or not UnitExists(target) then return false end
+    return UnitCanAssist("player", target) or UnitIsFriend("player", target)
+end
+
 -- Validates that the given target is either friend (if [help]) or foe (if [harm])
 -- target: The unit id to check
 -- help: Optional. If set to 1 then the target must be friendly. If set to 0 it must be an enemy.
@@ -1999,7 +1766,7 @@ end
 function CleveRoids.CheckHelp(target, help)
     if help == nil then return true end
     if help then
-        return UnitCanAssist("player", target)
+        return CleveRoids.IsHelpUnit(target)
     else
         return UnitCanAttack("player", target)
     end
@@ -2010,6 +1777,15 @@ end
 -- help: Optional. If set to 1 then the target must be friendly. If set to 0 it must be an enemy
 -- returns: Whether or not the target is a viable target
 function CleveRoids.IsValidTarget(target, help)
+    if not target then return false end
+
+    -- ClassicAPI-style non-unit tokens: [@cursor] places at mouse, [@none] means no unit.
+    -- UnitExists("cursor") errors with "Unknown unit name: cursor" on this client.
+    local lower = string.lower(target)
+    if lower == "cursor" or lower == "none" then
+        return true
+    end
+
     -- If the conditional is not for @mouseover, use the existing logic.
     if target ~= "mouseover" then
         if not UnitExists(target) or not CleveRoids.CheckHelp(target, help) then
@@ -2050,10 +1826,10 @@ function CleveRoids.GetCurrentShapeshiftIndex()
     if CleveRoids.playerClass == "PRIEST" then
         return CleveRoids.ValidatePlayerBuff(CleveRoids.Localized.Spells["Shadowform"]) and 1 or 0
     elseif CleveRoids.playerClass == "ROGUE" then
-        return CleveRoids.ValidatePlayerBuff(CleveRoids.Localized.Spells["Stealth"]) and 1 or 0
+        return CleveRoids.ClassicAPI.IsStealthed() and 1 or 0
     end
     for i=1, GetNumShapeshiftForms() do
-        _, _, active = GetShapeshiftFormInfo(i)
+        local _, _, active = GetShapeshiftFormInfo(i)
         if active then
             return i
         end
@@ -2063,120 +1839,66 @@ function CleveRoids.GetCurrentShapeshiftIndex()
 end
 
 function CleveRoids.CancelAura(auraName)
-	local ix = 0
-    auraName = string.lower(string.gsub(auraName, "_"," "))
+    auraName = string.lower(string.gsub(auraName, "_", " "))
 
-    -- v2.34+ path: cancel by spell ID (works for buff-capped overflow auras too)
-    local API = CleveRoids.NampowerAPI
-    if API and API.features.hasCancelPlayerAuraSpellId then
-        -- First scan visible buffs via GetPlayerBuff
-        if CleveRoids.hasSuperwow then
-            -- SuperWoW path: GetPlayerBuffID provides spell ID directly
-            while true do
-                local aura_ix = GetPlayerBuff(ix, "HELPFUL")
-                ix = ix + 1
-                if aura_ix == -1 then break end
-                local bid = GetPlayerBuffID(aura_ix)
-                bid = (bid < -1) and (bid + 65536) or bid
-                if string.lower(GetSpellRecField(bid, "name")) == auraName then
-                    _G.CancelPlayerAuraSpellId(bid, 1)
-                    return true
-                end
-            end
-        elseif API.features.hasGetPlayerAuraDuration and _G.GetPlayerAuraDuration then
-            -- Nampower path: scan buff aura slots 0-31 for spell IDs
-            for slot = 0, 31 do
-                local spellId = _G.GetPlayerAuraDuration(slot)
-                if spellId and spellId > 0 then
-                    local name = GetSpellRecField(spellId, "name")
-                    if name and string.lower(name) == auraName then
-                        _G.CancelPlayerAuraSpellId(spellId, 1)
-                        return true
-                    end
-                end
+    -- Find the matching player buff's spell ID, then cancel it via ClassicAPI's
+    -- C_Spell.CancelSpellByID. SuperWoW exposes buff spell IDs directly;
+    -- otherwise use Nampower's raw aura-slot read (sees slots the UI filters out).
+    if CleveRoids.hasSuperwow then
+        local ix = 0
+        while true do
+            local aura_ix = GetPlayerBuff(ix, "HELPFUL")
+            ix = ix + 1
+            if aura_ix == -1 then break end
+            local bid = GetPlayerBuffID(aura_ix)
+            bid = (bid < -1) and (bid + 65536) or bid
+            if string.lower(C_Spell.GetSpellName(bid) or "") == auraName then
+                C_Spell.CancelSpellByID(bid)
+                return true
             end
         end
-
-        -- Not found in visible buffs - scan all 32 raw aura slots
-        -- GetPlayerAuraDuration reads unit data fields directly (same 32 slots but bypasses UI filtering)
-        if API.features.hasGetPlayerAuraDuration and _G.GetPlayerAuraDuration then
-            for slot = 0, 31 do
-                local spellId = _G.GetPlayerAuraDuration(slot)
-                if spellId and spellId > 0 then
-                    local name = GetSpellRecField(spellId, "name")
-                    if name and string.lower(name) == auraName then
-                        _G.CancelPlayerAuraSpellId(spellId, 1)
-                        return true
-                    end
-                end
-            end
-        end
-
-        -- Final fallback: check overflow buff tracking (buffs applied while buff-capped
-        -- that have NO client aura slot - tracked via AURA_CAST_ON_SELF events)
-        for spellId, entry in pairs(CleveRoids.OverflowBuffs) do
-            -- Skip expired overflow entries
-            local elapsed = GetTime() - (entry.timestamp or 0)
-            if entry.durationSec and entry.durationSec > 0 and elapsed > entry.durationSec then
-                CleveRoids.OverflowBuffs[spellId] = nil
-            else
-                local name = GetSpellRecField(spellId, "name")
-                if name and string.lower(name) == auraName then
-                    _G.CancelPlayerAuraSpellId(spellId, 1)
-                    CleveRoids.OverflowBuffs[spellId] = nil
-                    return true
-                end
-            end
-        end
-        return false
     end
 
-    -- Legacy path for older Nampower versions
-	while true do
-		local aura_ix = GetPlayerBuff(ix,"HELPFUL")
-		ix = ix + 1
-		if aura_ix == -1 then break end
+    -- Nampower raw aura-slot read (sees slots the UI filters out; also the
+    -- non-SuperWoW path). Runs after the SuperWoW visible scan above.
+    if _G.GetPlayerAuraDuration then
+        for slot = 0, 31 do
+            local spellId = _G.GetPlayerAuraDuration(slot)
+            if spellId and spellId > 0 then
+                local name = C_Spell.GetSpellName(spellId)
+                if name and string.lower(name) == auraName then
+                    C_Spell.CancelSpellByID(spellId)
+                    return true
+                end
+            end
+        end
+    end
 
-		if CleveRoids.hasSuperwow then
-			local bid = GetPlayerBuffID(aura_ix)
-			bid = (bid < -1) and (bid + 65536) or bid
-			if string.lower(GetSpellRecField(bid, "name")) == auraName then
-				CancelPlayerBuff(aura_ix)
-				return true
-			end
-		else
-			AuraScanTooltip:SetPlayerBuff(aura_ix)
-			local name = string.lower(getglobal("AuraScanTooltipTextLeft1"):GetText())
-			if name == auraName then
-				CancelPlayerBuff(aura_ix)
-				break
-			end
-		end
+    -- Overflow buffs: applied while buff-capped, no client aura slot - tracked
+    -- via AURA_CAST_ON_SELF events. Cancel by spell ID.
+    for spellId, entry in pairs(CleveRoids.OverflowBuffs) do
+        local elapsed = GetTime() - (entry.timestamp or 0)
+        if entry.durationSec and entry.durationSec > 0 and elapsed > entry.durationSec then
+            CleveRoids.OverflowBuffs[spellId] = nil
+        else
+            local name = C_Spell.GetSpellName(spellId)
+            if name and string.lower(name) == auraName then
+                C_Spell.CancelSpellByID(spellId)
+                CleveRoids.OverflowBuffs[spellId] = nil
+                return true
+            end
+        end
+    end
 
-	end
-	return false
+    return false
 end
 
+-- ClassicAPI's C_Item.IsEquippedItem walks the 19 equipment slots natively and
+-- short-circuits on the first match, so it replaces the old Lua-side equipment
+-- cache entirely -- no per-call scan, no invalidation. Accepts itemID, item
+-- link, or (case-insensitive, decorated) name.
 function CleveRoids.HasGearEquipped(gearId)
-    if not gearId then return false end
-
-    -- PERFORMANCE: Build/refresh equipment cache if needed
-    BuildEquipmentCache()
-
-    -- Handle both numeric IDs and string IDs like "5196"
-    local wantId = tonumber(gearId)
-    local wantName = (type(gearId) == "string" and not wantId) and string.lower(gearId) or nil
-
-    -- PERFORMANCE: Use cached data instead of scanning all slots
-    for slot = 1, 19 do
-        if wantId and _equippedItemIDs[slot] == wantId then
-            return true
-        end
-        if wantName and _equippedItemNames[slot] == wantName then
-            return true
-        end
-    end
-    return false
+    return (gearId and C_Item.IsEquippedItem(gearId)) or false
 end
 
 
@@ -2184,34 +1906,21 @@ end
 -- weaponType: The name of the weapon's type (e.g. Axe, Shield, etc.)
 -- returns: True when equipped, otherwhise false
 function CleveRoids.HasWeaponEquipped(weaponType)
-    if not CleveRoids.WeaponTypeNames[weaponType] then
+    local def = CleveRoids.WeaponTypeNames[weaponType]
+    if not def then
         return false
     end
 
-    local slotName = CleveRoids.WeaponTypeNames[weaponType].slot
-    local localizedName = CleveRoids.WeaponTypeNames[weaponType].name
-    local slotId = GetInventorySlotInfo(slotName)
-    local slotLink = GetInventoryItemLink("player",slotId)
-
-    if not slotLink then
+    local slotId = GetInventorySlotInfo(def.slot)
+    local itemId = CleveRoids.ClassicAPI.GetInventoryItemID("player", slotId)
+    if not itemId then
         return false
     end
 
-    local _,_,itemId = string.find(slotLink,"item:(%d+)")
-    if not itemId then -- Also good to check if itemId was found
-        return false
-    end
-    local _name,_link,_,_lvl,_type,subtype = GetItemInfo(itemId)
-    -- just had to be special huh?
-    local fist = string.find(subtype,"^Fist")
-    -- drops things like the One-Handed prefix
-    local _,_,subtype = string.find(subtype,"%s?(%S+)$")
-
-    if subtype == localizedName or (fist and (CleveRoids.WeaponTypeNames[weaponType].name == CleveRoids.Localized.FistWeapon)) then
-        return true
-    end
-
-    return false
+    -- Compare locale-independent item class/subclass instead of matching the
+    -- localized subtype string (GetItemInfoInstant: ..., classID, subClassID).
+    local _, _, _, _, _, classID, subClassID = C_Item.GetItemInfoInstant(itemId)
+    return classID == def.class and def.subClass[subClassID] == true
 end
 
 -- Checks whether or not the given UnitId is in your party or your raid
@@ -2219,6 +1928,15 @@ end
 -- groupType: The name of the group type your target has to be in ("party" or "raid")
 -- returns: True when the given target is in the given groupType, otherwhise false
 function CleveRoids.IsTargetInGroupType(target, groupType)
+    if not target then return false end
+    -- Player is a teammate when grouped (party1-N never aliases "player" in 1.12)
+    if UnitIsUnit("player", target) then
+        if groupType == "raid" then
+            return (GetNumRaidMembers() or 0) > 0
+        end
+        return (GetNumPartyMembers() or 0) > 0 or (GetNumRaidMembers() or 0) > 0
+    end
+
     local groupSize = (groupType == "raid") and 40 or 5
 
     for i = 1, groupSize do
@@ -2228,10 +1946,6 @@ function CleveRoids.IsTargetInGroupType(target, groupType)
     end
 
     return false
-end
-
-function CleveRoids.GetSpammableConditional(name)
-    return CleveRoids.spamConditions[name] or "nomybuff"
 end
 
 -- PERFORMANCE: Cache for stripped spell names (removes rank suffix)
@@ -2644,30 +2358,43 @@ function CleveRoids.ValidateRangedTimer(operator, amount)
     return false
 end
 
--- Validate if casting the action's spell NOW will NOT clip the ranged auto-shot
--- Returns true if rangedTimeRemaining >= spellCastTime (enough time to finish cast before next auto)
--- If ranged timer is not active, returns true (nothing to clip)
+-- Validate if casting the action's spell NOW will NOT clip the ranged auto-shot.
+--
+-- With Quiver (hunter): match CastNoClip — allow anytime except auto-shot windup
+-- (PredMidShot = shooting and not reloading). Do NOT require SP_SwingTimer
+-- remaining >= castTime: Aimed/Steady often exceed weapon speed, so that check
+-- would permanently block cast-time hunter shots during a healthy reload window.
+--
+-- Without Quiver: fall back to SP_SwingTimer remaining >= castTime for cast-time
+-- spells; instants pass (cannot detect windup without Quiver).
 function CleveRoids.ValidateNoRangedClip(conditionals)
-    local remaining, rangedSpeed = CleveRoids.GetRangedTimerRaw()
-    if remaining == nil then
-        -- No ranged timer available — either no addon or timer not active (nothing to clip)
-        if st_timerRangeMax == nil and not CleveRoids._rangedClipErrorShown then
-            DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[SuperCleveRoidMacros]|r The [norangedclip] conditional requires SP_SwingTimer. Get it at: https://github.com/jrc13245/SP_SwingTimer", 1, 0.5, 0.5)
-            CleveRoids._rangedClipErrorShown = true
-        end
-        return true
+    if Quiver and Quiver.PredMidShot then
+        return not Quiver.PredMidShot()
     end
 
-    -- Get the cast time of the action spell
+    local remaining, rangedSpeed = CleveRoids.GetRangedTimerRaw()
     local actionName = conditionals and conditionals.action
     if not actionName then return true end
 
     local castTime = CleveRoids.GetSpellCastTime(actionName)
     if not castTime or castTime <= 0 then
-        return true  -- Instant cast, no clip possible
+        return true
+    end
+
+    if remaining == nil then
+        if st_timerRangeMax == nil and not CleveRoids._rangedClipErrorShown then
+            DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[SuperCleveRoidMacros]|r The [norangedclip] conditional requires Quiver (hunters) or SP_SwingTimer. Quiver windup is preferred for Steady/Aimed. SP_SwingTimer: https://github.com/jrc13245/SP_SwingTimer", 1, 0.5, 0.5)
+            CleveRoids._rangedClipErrorShown = true
+        end
+        return true
     end
 
     return remaining >= castTime
+end
+
+-- [midshot] / [nomidshot]: Quiver auto-shot windup (shooting, not reloading)
+function CleveRoids.ValidateMidShot()
+    return Quiver and Quiver.PredMidShot and Quiver.PredMidShot() and true or false
 end
 
 -- Validate if current swing timer is within the Slam window (no clip)
@@ -2978,92 +2705,23 @@ function CleveRoids.ValidateTTE(operator, amount)
 end
 
 -- ============================================================================
--- MONKEYSPEED ADDON INTEGRATION
+-- MOVEMENT SPEED DETECTION
 -- ============================================================================
--- Integrates with MonkeySpeed addon for accurate movement speed detection
--- MonkeySpeed uses SuperWoW's UnitPosition to calculate actual movement speed
-
---- Check if MonkeySpeed addon is available and loaded
---- @return boolean True if MonkeySpeed is available with speed data
-function CleveRoids.HasMonkeySpeed()
-    return type(MonkeySpeed) == "table" and
-           MonkeySpeed.m_bLoaded == true and
-           MonkeySpeed.m_fSpeed ~= nil
-end
-
---- Require MonkeySpeed for a feature, warn once if missing
---- @param feature string Feature name for warning message
---- @return boolean True if MonkeySpeed is available
-function CleveRoids.RequireMonkeySpeed(feature)
-    if CleveRoids.HasMonkeySpeed() then
-        return true
-    end
-    if not CleveRoids._monkeySpeedErrorShown then
-        DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[SuperCleveRoidMacros]|r The [moving] speed conditional requires the MonkeySpeed addon.", 1, 0.5, 0.5)
-        CleveRoids._monkeySpeedErrorShown = true
-    end
-    return false
-end
+-- Backed by ClassicAPI's GetUnitSpeed (a hard requirement of this addon).
 
 --- Get current player movement speed as percentage (100 = normal run speed)
---- @return number|nil Speed percentage, or nil if MonkeySpeed not available
+--- @return number|nil Speed percentage, or nil if ClassicAPI is unavailable
 function CleveRoids.GetPlayerSpeed()
-    if not CleveRoids.HasMonkeySpeed() then
-        return nil
-    end
-    return MonkeySpeed.m_fSpeed or 0
+    return CleveRoids.ClassicAPI.GetPlayerSpeedPercent()
 end
 
 --- Check if player is currently moving (speed > 0)
---- Falls back to basic position checking if MonkeySpeed isn't available
+--- Backed by ClassicAPI's GetUnitSpeed; currentSpeed is horizontal-only, so
+--- jumping/falling is also treated as moving via IsFalling.
 --- @return boolean True if player is moving
 function CleveRoids.IsPlayerMoving()
-    -- If MonkeySpeed is available, use it for accurate speed-based detection
-    if CleveRoids.HasMonkeySpeed() then
-        return (MonkeySpeed.m_fSpeed or 0) > 0
-    end
-
-    -- Nampower 2.36+ provides direct movement flag query (catches jumping, falling, pitching)
-    if CleveRoids.NampowerAPI.features.hasPlayerIsMoving then
-        return PlayerIsMoving() == 1
-    end
-
-    -- Fallback: use continuously tracked position history from OnUpdate
-    -- Core.lua tracks position at ~100 Hz with 4-sample circular buffer (matches MonkeySpeed's 0.01s).
-    -- Movement is detected if ANY consecutive pair of samples shows movement.
-    -- This gives instant start-of-movement detection (first sample shows delta).
-    local history = CleveRoids._positionHistory
-    local count = CleveRoids._posHistoryCount or 0
-    local headIdx = CleveRoids._posHistoryIndex or 0
-
-    if history and count >= 2 then
-        -- Compare the most recent pair: headIdx (newest) vs. the slot before it.
-        -- Use (headIdx - 2 + 4) mod 4 to safely wrap backwards in the 1-based ring.
-        -- This avoids Lua 5.0 math.mod returning negative values for negative inputs.
-        local prevIdx = math.mod((headIdx - 2 + 4), 4) + 1
-        local curr = history[headIdx]
-        local prev = history[prevIdx]
-        if curr and prev then
-            local dx = curr.x - prev.x
-            local dy = curr.y - prev.y
-            return math.sqrt(dx * dx + dy * dy) > 0.001
-        end
-        return false
-    end
-
-    -- Legacy fallback for code that might not have history yet
-    local current = CleveRoids._currentPlayerPos
-    local previous = CleveRoids._previousPlayerPos
-
-    if current and previous then
-        local dx = current.x - previous.x
-        local dy = current.y - previous.y
-        local dist = math.sqrt(dx * dx + dy * dy)
-        return dist > 0.001
-    end
-
-    -- Not enough data yet (first 0.15s after login) - assume not moving
-    return false
+    local cur = CleveRoids.ClassicAPI.GetUnitCurrentSpeed("player") or 0
+    return cur > 0 or CleveRoids.ClassicAPI.IsPlayerFalling()
 end
 
 --- Validates a movement speed conditional.
@@ -3074,15 +2732,7 @@ end
 function CleveRoids.ValidateMovingSpeed(operator, amount)
     if not operator or not amount then return false end
 
-    -- Check if MonkeySpeed is available for speed comparisons
-    if not CleveRoids.RequireMonkeySpeed("moving speed comparison") then
-        return false
-    end
-
     local speed = CleveRoids.GetPlayerSpeed()
-    if speed == nil then
-        return false
-    end
 
     -- Compare speed against threshold
     if CleveRoids.operators[operator] then
@@ -3144,11 +2794,8 @@ function CleveRoids.CountEnemiesMatching(checkFunc)
     tryUnit("targettarget")
     tryUnit("targettargettarget")
     tryUnit("pettarget")
-    if pfUI and pfUI.uf and pfUI.uf.focus and pfUI.uf.focus.label and pfUI.uf.focus.id then
-        local focusUnit = pfUI.uf.focus.label .. pfUI.uf.focus.id
-        tryUnit(focusUnit)
-        tryUnit(focusUnit .. "target")
-    end
+    tryUnit("focus")
+    tryUnit("focustarget")
     for i = 1, 4 do
         tryUnit("party" .. i .. "target")
     end
@@ -3158,27 +2805,8 @@ function CleveRoids.CountEnemiesMatching(checkFunc)
         end
     end
 
-    -- 3. Nameplate scan: visible nameplates give live GUIDs without target switching
-    --    Requires Nampower v2.28+ (hasNameplateGUID) or SuperWoW
-    local API = CleveRoids.NampowerAPI
-    if (API and API.features.hasNameplateGUID) or CleveRoids.hasSuperwow then
-        local numChildren = WorldFrame:GetNumChildren()
-        local children = { WorldFrame:GetChildren() }
-        for i = 1, numChildren do
-            local frame = children[i]
-            if frame and frame:IsVisible() then
-                local success, guid = pcall(frame.GetName, frame, 1)
-                if success and guid and type(guid) == "string" and string.len(guid) > 0 and not checked[guid] then
-                    if UnitExists(guid) and UnitCanAttack("player", guid) then
-                        checked[guid] = true
-                        CleveRoids.knownEnemyGuids[guid] = true
-                        if checkFunc(guid) then
-                            count = count + 1
-                        end
-                    end
-                end
-            end
-        end
+    for i = 1, 40 do
+        tryUnit("nameplate"..i)
     end
 
     -- During tooltip evaluation, skip known-enemy cache iteration.
@@ -3190,7 +2818,8 @@ function CleveRoids.CountEnemiesMatching(checkFunc)
     -- 4. Previously-seen enemies (stealthed units, enemies that left nameplate range, etc.)
     for guid, _ in pairs(CleveRoids.knownEnemyGuids) do
         if not checked[guid] then
-            if UnitExists(guid) and UnitCanAttack("player", guid) then
+            if UnitExists(guid) and UnitCanAttack("player", guid)
+               and not CleveRoids.IsUnitDeadOrGhost(guid) then
                 checked[guid] = true
                 if checkFunc(guid) then
                     count = count + 1
@@ -3200,6 +2829,261 @@ function CleveRoids.CountEnemiesMatching(checkFunc)
     end
 
     return count
+end
+
+--- Living named unit within maxDist (lowercase nameSet keys).
+--- Target dummies are temp world NPCs. UnitXP often misses them (in-combat filter,
+--- player-controlled flag, camera frustum). Prefer UnitTokenFromName / TargetByName.
+--- @param nameSet table map of lowercase exact names -> true
+--- @param maxDist number yards (default 20)
+--- @return boolean
+function CleveRoids.HasNearbyNamedEnemy(nameSet, maxDist)
+    if type(nameSet) ~= "table" then return false end
+    maxDist = maxDist or 20
+
+    local function inRange(unit)
+        if CleveRoids.hasUnitXP then
+            local d = UnitXP("distanceBetween", "player", unit)
+            if d then return d <= maxDist end
+        end
+        if type(CheckInteractDistance) == "function" then
+            local ok = CheckInteractDistance(unit, 4)
+            return ok == 1 or ok == true
+        end
+        return true
+    end
+
+    -- Do NOT require UnitCanAttack: alts must see a living dummy even before attacking it.
+    local function matches(unit)
+        if not unit or not UnitExists(unit) then return false end
+        if CleveRoids.IsUnitDeadOrGhost(unit) then return false end
+        local n = UnitName(unit)
+        if not n or not nameSet[string.lower(n)] then return false end
+        return inRange(unit)
+    end
+
+    if matches("target") then return true end
+    if matches("mouseover") then return true end
+    if matches("focus") then return true end
+    for i = 1, 40 do
+        if matches("nameplate" .. i) then return true end
+    end
+    for i = 1, 4 do
+        if matches("party" .. i .. "target") then return true end
+    end
+    if GetNumRaidMembers() > 0 then
+        for i = 1, 40 do
+            if matches("raid" .. i .. "target") then return true end
+        end
+    end
+    if CleveRoids.knownEnemyGuids then
+        for guid, _ in pairs(CleveRoids.knownEnemyGuids) do
+            if matches(guid) then return true end
+        end
+    end
+
+    -- ClassicAPI: engine find-by-name (party/raid/all loaded units), no frustum/combat filter
+    if type(UnitTokenFromName) == "function" then
+        for lowerName, _ in pairs(nameSet) do
+            local token = UnitTokenFromName(lowerName, 1)
+            if token and matches(token) then
+                return true
+            end
+        end
+    end
+
+    -- TargetByName exact (same search as /target Name)
+    if type(TargetByName) == "function" then
+        local origGuid = CleveRoids.GetGUID("target")
+        local found = false
+        for lowerName, _ in pairs(nameSet) do
+            ClearTarget()
+            TargetByName(lowerName, 1)
+            if matches("target") then
+                found = true
+                break
+            end
+        end
+        if origGuid and UnitExists(origGuid) then
+            TargetUnit(origGuid)
+        else
+            ClearTarget()
+        end
+        if found then return true end
+    end
+
+    -- UnitXP last resort with combat filter off
+    if not CleveRoids.hasUnitXP then
+        return false
+    end
+    local origGuid = CleveRoids.GetGUID("target")
+    local found = false
+    pcall(function() UnitXP("target", "disableInCombatFilter") end)
+    if UnitXP("target", "nearestEnemy") and matches("target") then
+        found = true
+    else
+        local firstGuid, seen = nil, {}
+        for i = 1, 50 do
+            if not UnitXP("target", "nextEnemyInCycle") then break end
+            local g = CleveRoids.GetGUID("target")
+            if not g then break end
+            if not firstGuid then firstGuid = g elseif g == firstGuid then break end
+            if not seen[g] then
+                seen[g] = true
+                if matches("target") then found = true break end
+            end
+        end
+    end
+    pcall(function() UnitXP("target", "enableInCombatFilter") end)
+    if origGuid and UnitExists(origGuid) then
+        TargetUnit(origGuid)
+    else
+        ClearTarget()
+    end
+    return found
+end
+
+--- Visible living creature by template entry within maxDist.
+--- ClosestUnitPosition is fast (object manager by entry) but can see corpses.
+--- Prefer an explicit living unit token; if entry is in range and no corpse was
+--- confirmed via name resolve, trust ClosestUnitPosition (covers fresh-spawn lag
+--- before TargetByName/nameplates catch up — otherwise next multibox alt places).
+--- @param entrySet table map of entry number -> true
+--- @param maxDist number yards (default 20)
+--- @return boolean
+function CleveRoids.HasNearbyCreatureEntry(entrySet, maxDist)
+    if type(entrySet) ~= "table" then return false end
+    maxDist = maxDist or 20
+
+    -- CN / EN names for common target-dummy entries (TWOW locales)
+    if not CleveRoids.CREATURE_ENTRY_NAMES then
+        CleveRoids.CREATURE_ENTRY_NAMES = {
+            [2673] = { "活动假人", "Target Dummy" },
+            [2674] = { "高级假人", "Advanced Target Dummy" },
+            [12426] = { "高级活动假人", "Masterwork Target Dummy" },
+        }
+    end
+
+    local function inRange(unit)
+        if CleveRoids.hasUnitXP then
+            local d = UnitXP("distanceBetween", "player", unit)
+            if d then return d <= maxDist end
+        end
+        if type(CheckInteractDistance) == "function" then
+            local ok = CheckInteractDistance(unit, 4)
+            return ok == 1 or ok == true
+        end
+        return true
+    end
+
+    local function isLivingEntry(unit, entry)
+        if not unit or not UnitExists(unit) then return false end
+        if CleveRoids.IsUnitDeadOrGhost(unit) then return false end
+        if type(UnitCreatureID) == "function" then
+            if UnitCreatureID(unit) ~= entry then return false end
+        end
+        return inRange(unit)
+    end
+
+    local function findLivingEntry(entry)
+        local nearDist = nil
+        if type(ClosestUnitPosition) == "function" then
+            local x, y, dist = ClosestUnitPosition(entry)
+            if x and dist then
+                if dist > maxDist then
+                    return false
+                end
+                nearDist = dist
+            end
+        end
+
+        if isLivingEntry("target", entry) then return true end
+        if isLivingEntry("mouseover", entry) then return true end
+        if isLivingEntry("focus", entry) then return true end
+        for i = 1, 40 do
+            if isLivingEntry("nameplate" .. i, entry) then return true end
+        end
+        for i = 1, 4 do
+            if isLivingEntry("party" .. i .. "target", entry) then return true end
+        end
+        if GetNumRaidMembers() > 0 then
+            for i = 1, 40 do
+                if isLivingEntry("raid" .. i .. "target", entry) then return true end
+            end
+        end
+
+        local names = CleveRoids.CREATURE_ENTRY_NAMES[entry]
+        local sawDead = false
+        if names then
+            if type(UnitTokenFromName) == "function" then
+                for ni = 1, table.getn(names) do
+                    local token = UnitTokenFromName(names[ni], 1)
+                    if token and UnitExists(token) then
+                        if type(UnitCreatureID) ~= "function" or UnitCreatureID(token) == entry then
+                            if CleveRoids.IsUnitDeadOrGhost(token) then
+                                sawDead = true
+                            elseif inRange(token) then
+                                return true
+                            end
+                        end
+                    end
+                end
+            end
+            if type(TargetByName) == "function" then
+                local origGuid = CleveRoids.GetGUID("target")
+                local foundLive = false
+                for ni = 1, table.getn(names) do
+                    ClearTarget()
+                    TargetByName(names[ni], 1)
+                    if UnitExists("target") and (type(UnitCreatureID) ~= "function" or UnitCreatureID("target") == entry) then
+                        if CleveRoids.IsUnitDeadOrGhost("target") then
+                            sawDead = true
+                        elseif inRange("target") then
+                            foundLive = true
+                            break
+                        end
+                    end
+                end
+                if origGuid and UnitExists(origGuid) then
+                    TargetUnit(origGuid)
+                else
+                    ClearTarget()
+                end
+                if foundLive then return true end
+            end
+        end
+
+        -- Confirmed corpse only → absent for our purposes
+        if sawDead and not nearDist then
+            return false
+        end
+        if sawDead and nearDist then
+            -- Object manager still has entry; name resolve only sees dead → treat as dead
+            return false
+        end
+
+        -- Fresh spawn lag: ClosestUnitPosition already sees the living NPC, but
+        -- TargetByName/nameplates are not ready yet. Trust the entry scan so the
+        -- next multibox window does not place another dummy a few seconds later.
+        if nearDist then
+            return true
+        end
+
+        return false
+    end
+
+    for entry, flag in pairs(entrySet) do
+        local id = tonumber(entry)
+        if not id and type(flag) == "number" then
+            id = flag
+        end
+        if id and id > 0 and (flag == true or type(flag) == "number" or flag == id) then
+            if findLivingEntry(id) then
+                return true
+            end
+        end
+    end
+    return false
 end
 
 --- Check if conditional arguments contain count mode (operator + amount)
@@ -3435,6 +3319,16 @@ function CleveRoids.ValidateKnown(args)
     local spell = CleveRoids.GetSpell(effective_name_to_check)
     local talent_points = nil
 
+    -- spell:<id> GetSpell always returns an id-only stub when not in the spellbook
+    -- (for tooltip/icon). Treat that stub as unknown so racials like Blood Fury
+    -- do not pass [known] for races that lack the spell.
+    local _, _, knownSpellId = string.find(tostring(effective_name_to_check), "^spell:(%d+)$")
+    if knownSpellId then
+        if not FindSpellBookSlotByID or not FindSpellBookSlotByID(tonumber(knownSpellId)) then
+            return false
+        end
+    end
+
     if not spell then
         talent_points = CleveRoids.GetTalent(effective_name_to_check)
     end
@@ -3451,6 +3345,11 @@ function CleveRoids.ValidateKnown(args)
     end
 
     if spell then
+        -- id-only stub from GetSpell(spell:<id>) when not learned — not known
+        if knownSpellId and not spell.spellSlot then
+            return false
+        end
+
         local spell_rank_str = spell.rank or (spell.highest and spell.highest.rank) or ""
         -- FLEXIBLY extract just the number from the rank string
         local _, _, spell_rank_num_str = string.find(spell_rank_str, "(%d+)")
@@ -3494,10 +3393,30 @@ end
 -- returns: True or false
 function CleveRoids.ValidatePower(unit, operator, amount)
     if not unit or not operator or not amount then return false end
-    local API = CleveRoids.NampowerAPI
-    local power = API and API.GetUnitPower and API.GetUnitPower(unit) or UnitMana(unit)
-    local maxPower = API and API.GetUnitMaxPower and API.GetUnitMaxPower(unit) or UnitManaMax(unit)
+    local API = CleveRoids.ClassicAPI
+    local power = API.UnitPower(unit)
+    local maxPower = API.UnitPowerMax(unit)
     local powerPercent = maxPower > 0 and (100 * power / maxPower) or 0
+
+    if CleveRoids.operators[operator] then
+        return CleveRoids.comparators[operator](powerPercent, amount)
+    end
+
+    return false
+end
+
+-- Validates a SPECIFIC power slot (Enum.PowerType: 0=Mana, 1=Rage, 3=Energy) as a
+-- percentage, regardless of the unit's primary power -- so [mana]/[energy]/[rage]
+-- read the right pool cross-form (druid mana in cat) and cross-unit (@target mana).
+-- A unit with no such pool (max <= 0) fails rather than reading as 0% (avoids a
+-- rageless caster satisfying [rage:<10]).
+function CleveRoids.ValidateTypedPower(unit, powerType, operator, amount)
+    if not unit or not operator or not amount then return false end
+    if not UnitExists(unit) then return false end
+    local API = CleveRoids.ClassicAPI
+    local maxPower = API.UnitPowerMax(unit, powerType)
+    if not maxPower or maxPower <= 0 then return false end
+    local powerPercent = 100 * API.UnitPower(unit, powerType) / maxPower
 
     if CleveRoids.operators[operator] then
         return CleveRoids.comparators[operator](powerPercent, amount)
@@ -3513,8 +3432,7 @@ end
 -- returns: True or false
 function CleveRoids.ValidateRawPower(unit, operator, amount)
     if not unit or not operator or not amount then return false end
-    local API = CleveRoids.NampowerAPI
-    local power = API and API.GetUnitPower and API.GetUnitPower(unit) or UnitMana(unit)
+    local power = CleveRoids.ClassicAPI.UnitPower(unit)
 
     if power and CleveRoids.operators[operator] then
         return CleveRoids.comparators[operator](power, amount)
@@ -3523,23 +3441,15 @@ function CleveRoids.ValidateRawPower(unit, operator, amount)
     return false
 end
 
--- Raw caster-form mana for druids (SuperWoW: 2nd return of UnitMana)
+-- Raw caster-form mana for druids. Read the mana power slot directly
+-- (0 = Enum.PowerType.Mana) so it works while shapeshifted, when the druid's
+-- primary power is rage/energy -- no SuperWoW 2nd-return-of-UnitMana needed.
 function CleveRoids.ValidateDruidRawMana(unit, operator, amount)
     unit = unit or "player"
     if not operator or amount == nil then return false end
     if (CleveRoids.playerClass ~= "DRUID") then return false end
 
-    -- SuperWoW returns: current-form power, caster-form mana
-    local _, casterMana = UnitMana(unit)
-
-    -- Fallback: if for some reason we didn't get a 2nd value and we're in caster form now
-    if type(casterMana) ~= "number" then
-        if UnitPowerType and UnitPowerType(unit) == 0 then
-            casterMana = UnitMana(unit)
-        else
-            return false
-        end
-    end
+    local casterMana = CleveRoids.ClassicAPI.UnitPower(unit, 0)
 
     local cmp = CleveRoids.comparators and CleveRoids.comparators[operator]
     return cmp and cmp(casterMana, amount) or false
@@ -3552,13 +3462,29 @@ end
 -- returns: True or false
 function CleveRoids.ValidatePowerLost(unit, operator, amount)
     if not unit or not operator or not amount then return false end
-    local API = CleveRoids.NampowerAPI
-    local maxPower = API and API.GetUnitMaxPower and API.GetUnitMaxPower(unit) or UnitManaMax(unit)
-    local power = API and API.GetUnitPower and API.GetUnitPower(unit) or UnitMana(unit)
-    local powerLost = maxPower - power
+    local powerLost = CleveRoids.ClassicAPI.UnitPowerMissing(unit)
 
     if CleveRoids.operators[operator] then
         return CleveRoids.comparators[operator](powerLost, amount)
+    end
+
+    return false
+end
+
+-- Checks the given unit's spell haste percentage vs the given amount
+-- unit: The unit we're checking
+-- operator: valid comparitive operator symbol
+-- amount: The required amount, in percent (0 = unhasted, negative = slowed)
+-- returns: True or false
+-- NOTE: the shared arg parser doesn't accept a sign on the amount, so a
+-- specific negative threshold ([myspellhaste:<-10]) can't be written; use
+-- [myspellhaste:<0] to test for being slowed at all.
+function CleveRoids.ValidateSpellHaste(unit, operator, amount)
+    if not unit or not operator or not amount then return false end
+    local haste = CleveRoids.ClassicAPI.UnitSpellHaste(unit)
+
+    if CleveRoids.operators[operator] then
+        return CleveRoids.comparators[operator](haste, amount)
     end
 
     return false
@@ -3607,10 +3533,7 @@ end
 -- returns: True or false
 function CleveRoids.ValidateHpLost(unit, operator, amount)
     if not unit or not operator or not amount then return false end
-    local API = CleveRoids.NampowerAPI
-    local maxHp = API and API.GetUnitMaxHealth and API.GetUnitMaxHealth(unit) or UnitHealthMax(unit)
-    local hp = API and API.GetUnitHealth and API.GetUnitHealth(unit) or UnitHealth(unit)
-    local hpLost = maxHp - hp
+    local hpLost = CleveRoids.ClassicAPI.UnitHealthMissing(unit)
 
     if CleveRoids.operators[operator] then
         return CleveRoids.comparators[operator](hpLost, amount)
@@ -3630,15 +3553,16 @@ function CleveRoids.ValidateCreatureType(creatureType, target)
     if not targetType then return false end -- ooze or silithid etc
     local ct = string.lower(creatureType)
     local cl = UnitClassification(target)
-    -- Check classification: "boss" matches both "boss" and "worldboss"
+    -- [type:boss]: worldboss/boss/rareelite, or dungeon/raid boss ID list (BossList.lua).
+    -- Plain "elite" trash is NOT included — use type:elite explicitly for that.
     if ct == "boss" then
-        if cl == "boss" or cl == "worldboss" then
-            return true
+        if CleveRoids.IsBossUnit then
+            return CleveRoids.IsBossUnit(target) and true or false
         end
+        return (cl == "boss" or cl == "worldboss" or cl == "rareelite") and true or false
     elseif ct == cl then
         return true
     end
-    if ct == "boss" then creatureType = "worldboss" end
     local englishType = CleveRoids.Localized.CreatureTypes[targetType]
     return ct == string.lower(targetType) or creatureType == englishType
 end
@@ -3655,11 +3579,8 @@ function CleveRoids.ValidateCooldown(args, ignoreGCD)
         -- If this is a numeric slot (1-19), resolve to the equipped item's name
         local slotNum = tonumber(name)
         if slotNum and slotNum >= 1 and slotNum <= 19 then
-            local link = GetInventoryItemLink("player", slotNum)
-            if link then
-                local _, _, itemName = string.find(link, "%[(.+)%]")
-                if itemName then name = itemName end
-            end
+            local itemName = C_Item.GetItemName({ equipmentSlotIndex = slotNum })
+            if itemName then name = itemName end
         end
         args = {name = name}
     else
@@ -3670,11 +3591,8 @@ function CleveRoids.ValidateCooldown(args, ignoreGCD)
             -- If this is a numeric slot (1-19), resolve to the equipped item's name
             local slotNum = tonumber(name)
             if slotNum and slotNum >= 1 and slotNum <= 19 then
-                local link = GetInventoryItemLink("player", slotNum)
-                if link then
-                    local _, _, itemName = string.find(link, "%[(.+)%]")
-                    if itemName then name = itemName end
-                end
+                local itemName = C_Item.GetItemName({ equipmentSlotIndex = slotNum })
+                if itemName then name = itemName end
             end
             args.name = name
         else
@@ -3733,7 +3651,7 @@ local function GetLowercaseSpellName(spellID)
     local cached = _spellNameCache[spellID]
     if cached then return cached end
 
-    local name = GetSpellRecField(spellID, "name")
+    local name = C_Spell.GetSpellName(spellID)
     if not name then return nil end
 
     -- Strip rank and lowercase
@@ -3756,7 +3674,7 @@ local function GetSpellNames(spellID)
         return cached.base, cached.full
     end
 
-    local fullName = GetSpellRecField(spellID, "name")
+    local fullName = C_Spell.GetSpellName(spellID)
     if not fullName then return nil, nil end
 
     local baseName = _string_gsub(fullName, _RANK_PATTERN, "")
@@ -3781,6 +3699,51 @@ function CleveRoids.ClearSpellNameCaches()
         _baseNameCache[k] = nil
     end
     _baseNameCacheSize = 0
+end
+
+-- Resolve one aura on `unit` straight from ClassicAPI. This is the source of truth
+-- for aura state: C_UnitAuras reads the unit's own descriptor, and its Aura::Source
+-- cache reconstructs duration/expirationTime for ANY unit from the observed
+-- SMSG_SPELL_GO -- caster-modified, so talent extensions and combo-point finisher
+-- scaling are already applied, and Carnage's roll-gated Rip/Rake refresh is handled
+-- in the DLL rather than mirrored here.
+--
+-- Matching stays ours: by spellID when the conditional gave a number, else by
+-- lowercased name (C_UnitAuras' own by-name lookup is case-sensitive and exact,
+-- which would miss [debuff:thunder_clap]).
+--
+-- Returns found, stacks, remaining, spellId. `remaining` is -1 for an aura with no
+-- duration (permanent), nil when ClassicAPI has no timing for it -- an aura cast
+-- before we logged in, or one refreshed at max stacks -- and seconds otherwise.
+-- Presence and stacks are always reliable; only timing is best-effort.
+local function ResolveUnitAuraViaClassicAPI(unit, searchID, searchName, isbuff)
+    local filter = isbuff and "HELPFUL" or "HARMFUL"
+    local i = 1
+    while i <= 48 do
+        local name, _, count, _, duration, expirationTime, _, _, _, spellId =
+            C_UnitAuras.UnitAura(unit, i, filter)
+        if not name then break end
+
+        local hit
+        if searchID then
+            hit = (spellId == searchID)
+        elseif searchName then
+            hit = (_string_lower(name) == searchName)
+        end
+
+        if hit then
+            local remaining
+            if expirationTime and expirationTime > 0 then
+                remaining = expirationTime - GetTime()
+                if remaining < 0 then remaining = 0 end
+            elseif duration == 0 then
+                remaining = -1  -- no duration: permanent aura
+            end
+            return true, count or 0, remaining, spellId
+        end
+        i = i + 1
+    end
+    return false
 end
 
 function CleveRoids.ValidateAura(unit, args, isbuff)
@@ -4041,148 +4004,56 @@ function CleveRoids.ValidateAura(unit, args, isbuff)
         end
     end
 
-    -- allBuffAuras fallback for player buff timing: when slow path found the buff but
-    -- returned no remaining time, check lib.allBuffAuras for cached AURA_CAST timing.
-    if found and remaining == nil and isPlayer and isbuff and searchName then
-        local lib = type(CleveRoids.libdebuff) == "table" and CleveRoids.libdebuff or nil
-        if lib and lib.allBuffAuras then
-            local playerGuid = CleveRoids.GetGUID("player")
-            if playerGuid and lib.allBuffAuras[playerGuid] then
-                -- Try exact name match first
-                local casters = lib.allBuffAuras[playerGuid][args.name]
-                -- Try lowercase match if exact didn't work
-                if not casters then
-                    for bName, c in pairs(lib.allBuffAuras[playerGuid]) do
-                        if _string_lower(bName) == searchName then
-                            casters = c
-                            break
-                        end
-                    end
-                end
-                if casters then
-                    for _, cData in pairs(casters) do
-                        local elapsed = GetTime() - (cData.startTime or 0)
-                        remaining = cData.duration > 0 and (cData.duration - elapsed) or -1
-                        break
-                    end
-                end
-            end
+    -- Player timing gap-fill, from ClassicAPI. Replaces the lib.allBuffAuras lookup
+    -- that cached AURA_CAST start/duration for this: for the player, C_UnitAuras reads
+    -- expirationTime out of the engine's own player-buff table, so it is the more
+    -- authoritative source, not a fallback. Only runs when the scans above found the
+    -- aura but produced no time.
+    if found and remaining == nil and isPlayer and (searchID or searchName) then
+        local _, _, capRemaining = ResolveUnitAuraViaClassicAPI(unit, searchID, searchName, isbuff)
+        if capRemaining ~= nil then
+            remaining = capRemaining
         end
     end
 
-    -- Non-player overflow fallback: buff exists in server slots 33-48 (no client slot)
-    -- AllCasterAuraTracking already has data from AURA_CAST_ON_OTHER for all aura applications.
-    -- If the normal scan didn't find the buff, check there for presence + duration.
-    -- Guard: verify the spell isn't a visible debuff on the target (AllCasterAuraTracking
-    -- stores both buffs and debuffs, so without this check [buff:DebuffName] could false-positive).
-    if not found and not isPlayer and isbuff and (searchID or searchName) then
-        local targetGuid = CleveRoids.GetGUID(unit)
-        if targetGuid then
-            -- Check if the spell is in a visible debuff slot — if so, it's a debuff, not a buff
-            local isDebuff = false
-            local di = 1
-            while true do
-                local dtex, _, _, dspellId = UnitDebuff(unit, di)
-                if not dtex then break end
-                if dspellId then
-                    if searchID then
-                        if dspellId == searchID then
-                            isDebuff = true
-                            break
-                        end
-                    elseif searchName then
-                        local lowerName = GetLowercaseSpellName(dspellId)
-                        if lowerName and lowerName == searchName then
-                            isDebuff = true
-                            break
-                        end
-                    end
-                end
-                di = di + 1
-            end
-
-            if not isDebuff then
-                local trackRemaining = CleveRoids.FindAllCasterAuraByName(targetGuid,
-                    searchID and tostring(searchID) or args.name)
-                if trackRemaining then
-                    found = true
-                    stacks = 0
-                    remaining = trackRemaining
-                end
-            end
-        end
-    end
+    -- Removed: the non-player overflow fallback. It existed because a buff can sit in
+    -- server slots 33-48 with no client slot, so it read presence/duration out of
+    -- AllCasterAuraTracking, guarded by a UnitDebuff slot scan to stop [buff:Name]
+    -- matching a debuff (that table stores both). ClassicAPI makes all of it moot: its
+    -- HELPFUL/HARMFUL filters select on each aura's real polarity flag rather than
+    -- which slot range it happens to occupy, so "a debuff parked in a buff slot still
+    -- reads harmful" (docs/API.md) and an overflowed buff still reads helpful. The
+    -- ClassicAPI resolution above therefore already covers the overflow case, and it
+    -- classifies more accurately than the slot-range guard did.
 
     local ops = CleveRoids.operators
     local cmp = CleveRoids.comparators
 
-    -- For non-player units with time comparisons, try to get time from tracking systems
+    -- Non-player aura timing, straight from ClassicAPI. This replaces the old
+    -- lib.allBuffAuras lookup and the AllCasterAuraTracking / FindAllCasterAuraByName
+    -- fallback beneath it: both existed only because vanilla cannot report a timer for
+    -- an aura on another unit, which the Aura::Source cache now does. It also drops
+    -- the libdebuff UnitBuff timeleft bug those comments worked around.
     local nonPlayerAuraTimeRemaining = nil
-    if not isPlayer and args.name then
-        -- NOTE: libdebuff's UnitBuff has a bug where timeleft returns incorrect values
-        -- (showing ~1000s instead of actual remaining time). Skip it for buff time checks
-        -- and rely on all-caster tracking from AURA_CAST events instead.
-
-        -- Fast path: Check lib.allBuffAuras (spellName-indexed, O(1) lookup)
-        -- More efficient than FindAllCasterAuraByName which does ID→name translation
-        if nonPlayerAuraTimeRemaining == nil and isbuff then
-            local lib = type(CleveRoids.libdebuff) == "table" and CleveRoids.libdebuff or nil
-            if lib and lib.allBuffAuras then
-                local targetGuid = CleveRoids.GetGUID(unit)
-                if targetGuid then
-                    local buffEntries = lib.allBuffAuras[targetGuid]
-                    if buffEntries then
-                        -- Try exact name match first
-                        local casters = buffEntries[args.name]
-                        -- Try lowercase match if exact didn't work
-                        if not casters and searchName then
-                            for bName, c in pairs(buffEntries) do
-                                if _string_lower(bName) == searchName then
-                                    casters = c
-                                    break
-                                end
-                            end
-                        end
-                        if casters then
-                            for _, cData in pairs(casters) do
-                                local elapsed = GetTime() - (cData.startTime or 0)
-                                local rem = cData.duration > 0 and (cData.duration - elapsed) or -1
-                                if rem == nil or rem > 0 or cData.duration <= 0 then
-                                    nonPlayerAuraTimeRemaining = rem
-                                    if not found then
-                                        found = true
-                                        stacks = 0
-                                    end
-                                    break
-                                end
-                            end
-                        end
-                    end
-                end
+    if not isPlayer and (searchID or searchName) then
+        local capFound, capStacks, capRemaining =
+            ResolveUnitAuraViaClassicAPI(unit, searchID, searchName, isbuff)
+        if capFound then
+            if not found then
+                found = true
+                stacks = capStacks or 0
             end
+            -- Left nil when ClassicAPI has no timing (aura predates login, or a
+            -- max-stack refresh); the caller then falls back to its found-and-0 default.
+            nonPlayerAuraTimeRemaining = capRemaining
         end
 
-        -- Second try: All-caster tracking from AURA_CAST events (works for any caster)
-        -- Only use if libdebuff didn't find it (libdebuff has more accurate timing for player casts)
-        if nonPlayerAuraTimeRemaining == nil then
-            local targetGuid = CleveRoids.GetGUID(unit)
-            if targetGuid then
-                local remaining, casterGuid = CleveRoids.FindAllCasterAuraByName(targetGuid, args.name)
-
-                -- Debug output when enabled
-                if CleveRoids.debug then
-                    local hasData = CleveRoids.AllCasterAuraTracking[targetGuid] ~= nil
-                    DEFAULT_CHAT_FRAME:AddMessage(string.format(
-                        "|cffff9900[AuraLookup]|r %s on GUID %s: hasData=%s, remaining=%s",
-                        tostring(args.name), string.sub(tostring(targetGuid), 1, 16),
-                        tostring(hasData), tostring(remaining)
-                    ))
-                end
-
-                if remaining then
-                    nonPlayerAuraTimeRemaining = remaining
-                end
-            end
+        if CleveRoids.debug then
+            DEFAULT_CHAT_FRAME:AddMessage(string.format(
+                "|cffff9900[AuraLookup]|r %s on %s: found=%s, stacks=%s, remaining=%s",
+                tostring(args.name), tostring(unit), tostring(capFound),
+                tostring(capStacks), tostring(capRemaining)
+            ))
         end
     end
 
@@ -4411,7 +4282,7 @@ function CleveRoids.ValidateUnitDebuff(unit, args)
             local fallbackNameLower = _string_lower(args.name)
             for sid, rec in pairs(lib.objects[guid]) do
                 if rec and rec.caster == "player" then
-                    local n = GetSpellRecField and GetSpellRecField(sid, "name")
+                    local n = C_Spell.GetSpellName(sid)
                     if n then
                         n = CleveRoids.StripRank(n)
                         if _string_lower(n) == fallbackNameLower then
@@ -4498,7 +4369,7 @@ function CleveRoids.ValidateUnitDebuff(unit, args)
                             local cleanupNameLower = _string_lower(args.name)
                             for sid, rec in pairs(lib.objects[guid]) do
                                 if rec and rec.caster == "player" then
-                                    local n = GetSpellRecField and GetSpellRecField(sid, "name")
+                                    local n = C_Spell.GetSpellName(sid)
                                     if n then
                                         n = CleveRoids.StripRank(n)
                                         if _string_lower(n) == cleanupNameLower then
@@ -4832,19 +4703,9 @@ function CleveRoids.ValidatePlayerDebuff(args)
 end
 
 function CleveRoids.ValidateWeaponImbue(slot, args)
-    -- Check if weapon has enchant via API
-    local hasMainEnchant, mainExpiration, mainCharges, hasOffEnchant, offExpiration, offCharges = GetWeaponEnchantInfo()
-
-    local hasEnchant, expiration, charges
-    if slot == "mh" then
-        hasEnchant = hasMainEnchant
-        expiration = mainExpiration
-        charges = mainCharges
-    else
-        hasEnchant = hasOffEnchant
-        expiration = offExpiration
-        charges = offCharges
-    end
+    -- Temp-enchant state for this slot, read via ClassicAPI (centralizes the
+    -- 12-tuple indexing; enchantID unused here but powers [mhenchant]).
+    local hasEnchant, expiration, charges = CleveRoids.ClassicAPI.GetWeaponEnchant(slot)
 
     -- Only consider temporary enchants (with time or charges)
     -- This filters out permanent enchants like Crusader, Lifestealing, etc.
@@ -4953,10 +4814,113 @@ function CleveRoids.ParseImbueArgs(value, conditionals)
     return nil  -- Default: check for any imbue
 end
 
+-- SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY — shaman weapon imbues / poisons write
+-- their SpellItemEnchantment id into EffectMiscValue. See tw_world.spell_template:
+-- Rockbiter Rank 3 (8019) → enchant 1 ("石化 3"), not the spell name "石化武器".
+local SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY = 54
+
+-- Cache: lowercased spell name → { [enchantID] = true }
+local _tempEnchantIdsBySpell = {}
+
+-- Collect every temporary enchant ID any known rank of `spellName` applies.
+-- Uses ClassicAPI C_Spell.GetSpellEffectInfo (Spell.dbc), not tooltip / name fuzzy match.
+function CleveRoids.GetTempEnchantIDsForSpellName(spellName)
+    if not spellName or spellName == "" then return nil end
+    if not C_Spell or not C_Spell.GetSpellEffectInfo then return nil end
+
+    local key = GetLowerNormalizedName(spellName)
+    local cached = _tempEnchantIdsBySpell[key]
+    if cached then return cached end
+
+    local ids = {}
+    local found = false
+
+    local function addFromSpellId(spellId)
+        if not spellId or spellId == 0 then return end
+        local fx = C_Spell.GetSpellEffectInfo(spellId)
+        if not fx then return end
+        for i = 1, 3 do
+            local e = fx[i]
+            if e and e.effect == SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY and e.miscValue and e.miscValue ~= 0 then
+                ids[e.miscValue] = true
+                found = true
+            end
+        end
+    end
+
+    -- Every rank the player has in the spellbook for this localized name.
+    if CleveRoids.Spells then
+        for _, bookSpells in pairs(CleveRoids.Spells) do
+            local entry = bookSpells and bookSpells[spellName]
+            if not entry then
+                -- case-insensitive fallback
+                local want = key
+                for name, e in pairs(bookSpells) do
+                    if type(name) == "string" and GetLowerNormalizedName(name) == want then
+                        entry = e
+                        break
+                    end
+                end
+            end
+            if entry then
+                if entry.id then addFromSpellId(entry.id) end
+                for k, v in pairs(entry) do
+                    if type(v) == "table" and v.id then
+                        addFromSpellId(v.id)
+                    end
+                end
+            end
+        end
+    end
+
+    -- Nampower / ClassicAPI single-id fallback when the spell isn't indexed yet
+    if not found then
+        local spellId = nil
+        if GetSpellIdForName then
+            spellId = GetSpellIdForName(spellName)
+        elseif CleveRoids.NampowerAPI and CleveRoids.NampowerAPI.GetSpellIdFromName then
+            spellId = CleveRoids.NampowerAPI.GetSpellIdFromName(spellName)
+        end
+        addFromSpellId(spellId)
+    end
+
+    if not found then
+        _tempEnchantIdsBySpell[key] = false
+        return nil
+    end
+    _tempEnchantIdsBySpell[key] = ids
+    return ids
+end
+
+-- True if the applied enchantID is one that `spellOrEnchantName` applies
+-- (spell name → all ranks' EffectMiscValue), or matches GetEnchantName as before.
+local function EnchantNameOrSpellMatches(spellOrEnchantName, enchantID)
+    if not spellOrEnchantName or spellOrEnchantName == "" or not enchantID then
+        return false
+    end
+    local enchantIds = CleveRoids.GetTempEnchantIDsForSpellName(spellOrEnchantName)
+    if enchantIds and enchantIds[enchantID] then
+        return true
+    end
+    local name = CleveRoids.ClassicAPI.GetEnchantName(enchantID)
+    if not name then return false end
+    local nlower = GetLowerNormalizedName(name)
+    local want = GetLowerNormalizedName(spellOrEnchantName)
+    return nlower == want
+        or string.find(nlower, want, 1, true) ~= nil
+        or string.find(want, nlower, 1, true) ~= nil
+end
+
 -- Helper function: Check if specific imbue name is on weapon via tooltip scan
 function CleveRoids.CheckWeaponImbueByName(slot, imbueName)
     if not imbueName or imbueName == "" then
         return true  -- No name to check
+    end
+
+    local _, _, _, enchantID = CleveRoids.ClassicAPI.GetWeaponEnchant(slot)
+    -- Primary: spell name → temp-enchant IDs (DBC). Fixes 石化武器 vs tooltip "石化 3".
+    if enchantID and EnchantNameOrSpellMatches(imbueName, enchantID) then
+        return true
     end
 
     -- Create tooltip scanner if needed
@@ -4971,6 +4935,9 @@ function CleveRoids.CheckWeaponImbueByName(slot, imbueName)
 
     -- PERFORMANCE: Use cached normalization to avoid per-call string allocation
     local searchTerm = GetLowerNormalizedName(imbueName)
+    -- Also accept the short DBC/tooltip form ("石化") derived from known enchant name
+    local enchantLabel = enchantID and CleveRoids.ClassicAPI.GetEnchantName(enchantID)
+    local enchantTerm = enchantLabel and GetLowerNormalizedName(enchantLabel)
 
     -- Look for green text with time markers - check ALL green lines with time
     for i = 1, CleveRoidsTooltip:NumLines() do
@@ -4982,12 +4949,19 @@ function CleveRoids.CheckWeaponImbueByName(slot, imbueName)
                 -- Green text indicates enchant
                 if g > 0.8 and r < 0.2 and b < 0.2 then
                     local lowerLine = string.lower(line)
-                    -- Only check lines with time markers (temporary enchants)
-                    -- This skips permanent weapon stats like "Equip: ... critical strike ..."
-                    if string.find(lowerLine, "%(") and (string.find(lowerLine, " min%)") or string.find(lowerLine, " sec%)") or string.find(lowerLine, " charge")) then
-                        -- This is a temporary enchant line, check if it matches
-                        if string.find(lowerLine, searchTerm, 1, true) then
-                            return true  -- Found it!
+                    -- Temporary-enchant lines carry a remaining-time suffix.
+                    -- enUS: "(29 min)" / zhCN: "(29分钟)" or fullwidth "（29分钟）"
+                    local hasTime = (string.find(lowerLine, "%(") or string.find(line, "（"))
+                        and (string.find(lowerLine, " min%)")
+                            or string.find(lowerLine, " sec%)")
+                            or string.find(lowerLine, " charge")
+                            or string.find(line, "分钟")
+                            or string.find(line, "秒")
+                            or string.find(line, "次"))
+                    if hasTime then
+                        if string.find(lowerLine, searchTerm, 1, true)
+                            or (enchantTerm and string.find(lowerLine, enchantTerm, 1, true)) then
+                            return true
                         end
                     end
                 end
@@ -4997,6 +4971,42 @@ function CleveRoids.CheckWeaponImbueByName(slot, imbueName)
 
     -- Checked all lines, didn't find it
     return false
+end
+
+-- Does a single [mhenchant]/[ohenchant] value match the applied enchant?
+-- value is a numeric enchant ID (exact), a spell name (resolved via
+-- GetTempEnchantIDsForSpellName → EffectMiscValue), or an enchant display name.
+local function EnchantValueMatches(value, enchantID)
+    if type(value) == "table" then value = value.name end
+    if not value or value == "" then return false end
+    local wantId = tonumber(value)
+    if wantId then
+        return enchantID == wantId
+    end
+    return EnchantNameOrSpellMatches(value, enchantID)
+end
+
+-- Matches the temporary weapon enchant on `slot` ("mh"/"oh") by enchant ID or
+-- localized name, both resolved via ClassicAPI (C_Item.GetWeaponEnchantInfo +
+-- GetEnchantInfo) -- locale-proof and exact, unlike the tooltip-scanned
+-- [mhimbue:Name]. value may be true/nil (any temp enchant), a single ID/name,
+-- or an OR-list array; returns true if the applied enchant matches any entry.
+function CleveRoids.ValidateWeaponEnchant(slot, value)
+    local hasEnchant, expiration, charges, enchantID = CleveRoids.ClassicAPI.GetWeaponEnchant(slot)
+    local hasTemp = hasEnchant and ((expiration and expiration > 0) or (charges and charges > 0))
+    if not hasTemp then return false end
+
+    -- Bare [mhenchant]: any temporary enchant present.
+    if value == nil or value == true then return true end
+
+    -- OR-list (e.g. [mhenchant:2823/Deadly_Poison]) is an array of strings.
+    if type(value) == "table" and not value.name and table.getn(value) > 0 then
+        for i = 1, table.getn(value) do
+            if EnchantValueMatches(value[i], enchantID) then return true end
+        end
+        return false
+    end
+    return EnchantValueMatches(value, enchantID)
 end
 
 -- TODO: Look into https://github.com/Stanzilla/WoWUIBugs/issues/47 if needed
@@ -5058,13 +5068,11 @@ function CleveRoids.HasItem(item)
   if type(item) == "string" and item ~= "" then
     local itemLower = string.lower(item)
 
-    -- Check equipped slots for substring match
-    for slot = 0, 19 do
-      local link = GetInventoryItemLink("player", slot)
-      if link then
-        if string.find(string.lower(link), itemLower, 1, true) then
-          return true
-        end
+    -- Check equipped slots for substring match (decorated name, no link build)
+    for slot = 1, 19 do
+      local name = C_Item.GetItemName({ equipmentSlotIndex = slot })
+      if name and string.find(string.lower(name), itemLower, 1, true) then
+        return true
       end
     end
 
@@ -5073,11 +5081,9 @@ function CleveRoids.HasItem(item)
       local size = GetContainerNumSlots(bag)
       if size and size > 0 then
         for slotIndex = 1, size do
-          local link = GetContainerItemLink(bag, slotIndex)
-          if link then
-            if string.find(string.lower(link), itemLower, 1, true) then
-              return true
-            end
+          local name = C_Item.GetItemName({ bagID = bag, slotIndex = slotIndex })
+          if name and string.find(string.lower(name), itemLower, 1, true) then
+            return true
           end
         end
       end
@@ -5122,14 +5128,12 @@ function CleveRoids.GetItemCooldown(item)
     local itemLower = string.lower(item)
     local start, dur, en
 
-    -- Check equipped slots for substring match
-    for slot = 0, 19 do
-      local link = GetInventoryItemLink("player", slot)
-      if link then
-        if string.find(string.lower(link), itemLower, 1, true) then
-          start, dur, en = GetInventoryItemCooldown("player", slot)
-          return _norm(start, dur, en)
-        end
+    -- Check equipped slots for substring match (decorated name, no link build)
+    for slot = 1, 19 do
+      local name = C_Item.GetItemName({ equipmentSlotIndex = slot })
+      if name and string.find(string.lower(name), itemLower, 1, true) then
+        start, dur, en = GetInventoryItemCooldown("player", slot)
+        return _norm(start, dur, en)
       end
     end
 
@@ -5138,12 +5142,10 @@ function CleveRoids.GetItemCooldown(item)
       local size = GetContainerNumSlots(bag)
       if size and size > 0 then
         for slotIndex = 1, size do
-          local link = GetContainerItemLink(bag, slotIndex)
-          if link then
-            if string.find(string.lower(link), itemLower, 1, true) then
-              start, dur, en = GetContainerItemCooldown(bag, slotIndex)
-              return _norm(start, dur, en)
-            end
+          local name = C_Item.GetItemName({ bagID = bag, slotIndex = slotIndex })
+          if name and string.find(string.lower(name), itemLower, 1, true) then
+            start, dur, en = GetContainerItemCooldown(bag, slotIndex)
+            return _norm(start, dur, en)
           end
         end
       end
@@ -5182,22 +5184,11 @@ function CleveRoids.ValidatePlayerAuraCount(bigger, amount)
 end
 
 function CleveRoids.IsReactive(name)
-    return CleveRoids.reactiveSpells[spellName] ~= nil
+    return CleveRoids.reactiveSpells[name] ~= nil
 end
 
-function CleveRoids.GetActionButtonInfo(slot)
-    local macroName, actionType, id = GetActionText(slot)
-    if actionType == "MACRO" then
-        return actionType, id, macroName
-    elseif actionType == "SPELL" and id then
-        local spellName = GetSpellRecField(id, "name")
-        local rank = GetSpellRecField(id, "rank")
-        return actionType, id, spellName, rank
-    elseif actionType == "ITEM" and id then
-        local item = CleveRoids.GetItem(id)
-        return actionType, id, (item and item.name), (item and item.id)
-    end
-end
+-- NOTE: CleveRoids.GetActionButtonInfo is defined in Extensions/Tooltip/Generic.lua
+-- (ClassicAPI GetActionInfo-based) and loads after this file.
 
 function CleveRoids.IsReactiveUsable(spellName)
     -- For Overpower, Revenge, and Riposte: ONLY use combat log tracking
@@ -5311,7 +5302,7 @@ function CleveRoids.CheckSpellCast(unit, spell)
     if not CleveRoids.spell_tracking[guid] then
         return false
     else
-        if spell == GetSpellRecField(CleveRoids.spell_tracking[guid].spell_id, "name") or (spell == "") then
+        if spell == C_Spell.GetSpellName(CleveRoids.spell_tracking[guid].spell_id) or (spell == "") then
             return true
         end
         return false
@@ -5324,7 +5315,8 @@ end
 -- ============================================================================
 
 -- Maps CC type names to mechanic constants (matches DBC mechanic IDs)
--- Note: Some types map to multiple mechanics via CCMechanicGroups below
+-- One name, one mechanic: [cc:type] follows the exact DBC mechanic. Several
+-- names may share a mechanic as aliases, but no name spans two mechanics.
 CleveRoids.CCMechanics = {
     -- Movement/control impairment
     charm       = 1,   -- Mind Control, Seduction
@@ -5333,31 +5325,30 @@ CleveRoids.CCMechanics = {
     disarm      = 3,   -- Disarm, Riposte disarm
     distract    = 4,   -- Distract (Rogue ability)
     fear        = 5,   -- Fear, Psychic Scream, Howl of Terror
-    grip        = 6,   -- Grip effects
+    fumble      = 6,   -- DBC Fumble mechanic
+    grip        = 6,   -- Legacy alias for fumble
     root        = 7,   -- Entangling Roots, Frost Nova, Improved Hamstring
     pacify      = 8,   -- Pacify effects
     silence     = 9,   -- Silence, Kick, Counterspell (lockout)
     sleep       = 10,  -- Hibernate, Wyvern Sting sleep
     snare       = 11,  -- Hamstring, Wing Clip, Crippling Poison
     slow        = 11,  -- Alias for snare
-    stun        = 12,  -- Consolidated: Stun(12) + Knockout(14) + Sap(30)
-    freeze      = 13,  -- Freeze effects (Frost Nova freeze)
+    stun        = 12,  -- Stun (Cheap Shot, Kidney Shot, Hammer of Justice)
+    freeze      = 13,  -- Freeze effects
+    knockout    = 14,  -- Knockout (Gouge, Repentance)
     bleed       = 15,  -- Rend, Garrote, Deep Wounds
     polymorph   = 17,  -- Polymorph (all variants)
     banish      = 18,  -- Banish (Warlock)
     shackle     = 20,  -- Shackle Undead
+    turn        = 23,  -- Turn effects
     horror      = 24,  -- Death Coil (Warlock), Intimidating Shout (horror)
+    interrupt   = 26,  -- Interrupt mechanic
     daze        = 27,  -- Dazed effects
-}
-
--- Mechanic groups: CC types that check multiple DBC mechanics
--- Used when a single conditional should match several related effects
-CleveRoids.CCMechanicGroups = {
-    stun = {12, 14, 30},  -- Stun(12), Knockout/Gouge(14), Sap(30)
+    sap         = 30,  -- Sap/Sapped mechanic
 }
 
 -- CC types that count as "crowd controlled" (loss of control)
--- Note: Mechanics 12, 14, 30 are all consolidated under "stun" for conditionals
+-- Individual DBC mechanics remain distinct; this table only powers [cc]/[cc:any].
 CleveRoids.CCTypesLossOfControl = {
     [1] = true,   -- charm
     [2] = true,   -- disoriented
@@ -5366,171 +5357,12 @@ CleveRoids.CCTypesLossOfControl = {
     [10] = true,  -- sleep
     [12] = true,  -- stun (Cheap Shot, Kidney Shot, etc.)
     [13] = true,  -- freeze
-    [14] = true,  -- knockout/gouge (now part of stun group)
+    [14] = true,  -- knockout/gouge
     [17] = true,  -- polymorph
     [18] = true,  -- banish
     [20] = true,  -- shackle
     [24] = true,  -- horror
-    [30] = true,  -- sap (now part of stun group)
-}
-
--- Complete spell ID to mechanic mapping from DBC data
--- Extracted from BuffLib SpellData - 785 spells with mechanics
--- Mechanic IDs: 1=Charm, 2=Disorient, 3=Disarm, 5=Fear, 7=Root, 9=Silence,
---               10=Sleep, 11=Snare, 12=Stun, 13=Freeze, 14=Knockout,
---               15=Bleed, 17=Polymorph, 18=Banish, 20=Shackle, 21=Mount,
---               23=Turn, 24=Horror, 25=Invuln, 27=Daze
-CleveRoids.CCSpellMechanics = {
-    [17] = 19, [56] = 12, [89] = 11, [113] = 7, [118] = 17, [228] = 17,
-    [246] = 11, [339] = 7, [408] = 12, [451] = 9, [458] = 21, [459] = 21,
-    [468] = 21, [470] = 21, [471] = 21, [472] = 21, [474] = 6, [498] = 25,
-    [507] = 6, [512] = 7, [578] = 21, [579] = 21, [580] = 21, [581] = 21,
-    [592] = 19, [593] = 6, [600] = 19, [605] = 1, [642] = 25, [676] = 3,
-    [700] = 10, [703] = 15, [710] = 18, [745] = 7, [746] = 16, [771] = 1,
-    [772] = 15, [835] = 12, [851] = 17, [853] = 12, [861] = 9, [867] = 6,
-    [998] = 6, [1020] = 25, [1022] = 25, [1062] = 7, [1079] = 15, [1090] = 10,
-    [1098] = 1, [1159] = 16, [1513] = 5, [1776] = 14, [1777] = 14, [1833] = 12,
-    [1943] = 15, [2070] = 14, [2094] = 2, [2637] = 10, [2878] = 23, [2880] = 12,
-    [2937] = 10, [3109] = 5, [3143] = 12, [3147] = 15, [3242] = 12, [3263] = 12,
-    [3267] = 16, [3268] = 16, [3355] = 13, [3363] = 21, [3409] = 11, [3410] = 11,
-    [3446] = 12, [3542] = 7, [3551] = 12, [3589] = 9, [3600] = 11, [3604] = 11,
-    [3609] = 12, [3635] = 12, [3636] = 10, [3747] = 19, [4060] = 17, [4064] = 12,
-    [4065] = 12, [4066] = 12, [4067] = 12, [4068] = 12, [4069] = 12, [4102] = 15,
-    [4244] = 15, [4962] = 7, [5106] = 12, [5116] = 11, [5134] = 5, [5159] = 11,
-    [5164] = 12, [5195] = 7, [5196] = 7, [5211] = 12, [5246] = 5, [5259] = 3,
-    [5276] = 12, [5376] = 4, [5403] = 12, [5484] = 5, [5530] = 12, [5531] = 12,
-    [5567] = 7, [5573] = 25, [5588] = 12, [5589] = 12, [5597] = 15, [5598] = 15,
-    [5599] = 25, [5627] = 23, [5648] = 12, [5649] = 12, [5703] = 12, [5708] = 12,
-    [5782] = 5, [5784] = 21, [5917] = 6, [5918] = 12, [6065] = 19, [6066] = 19,
-    [6136] = 11, [6146] = 11, [6213] = 5, [6215] = 5, [6253] = 12, [6266] = 12,
-    [6304] = 12, [6358] = 1, [6388] = 11, [6409] = 12, [6435] = 12, [6466] = 12,
-    [6524] = 12, [6533] = 7, [6546] = 15, [6547] = 15, [6548] = 15, [6605] = 5,
-    [6607] = 12, [6608] = 3, [6648] = 21, [6653] = 21, [6654] = 21, [6713] = 3,
-    [6726] = 9, [6728] = 12, [6730] = 12, [6749] = 12, [6770] = 14, [6777] = 21,
-    [6788] = 19, [6798] = 12, [6896] = 21, [6897] = 21, [6898] = 21, [6899] = 21,
-    [6927] = 12, [6942] = 9, [6945] = 12, [6982] = 12, [6984] = 11, [6985] = 11,
-    [7074] = 9, [7093] = 5, [7139] = 12, [7279] = 11, [7321] = 11, [7399] = 5,
-    [7645] = 1, [7803] = 12, [7922] = 12, [7926] = 16, [7927] = 16, [7964] = 12,
-    [7967] = 10, [7992] = 11, [8040] = 10, [8122] = 5, [8124] = 5, [8142] = 7,
-    [8150] = 12, [8208] = 12, [8225] = 5, [8242] = 12, [8281] = 9, [8285] = 12,
-    [8312] = 7, [8346] = 7, [8377] = 7, [8379] = 3, [8391] = 12, [8394] = 21,
-    [8395] = 21, [8396] = 21, [8399] = 10, [8629] = 14, [8631] = 15, [8632] = 15,
-    [8633] = 15, [8639] = 15, [8640] = 15, [8643] = 12, [8646] = 12, [8715] = 5,
-    [8716] = 11, [8818] = 15, [8901] = 10, [8902] = 10, [8980] = 21, [8983] = 12,
-    [8988] = 9, [8994] = 18, [9005] = 12, [9007] = 15, [9080] = 11, [9159] = 10,
-    [9484] = 20, [9485] = 20, [9552] = 9, [9823] = 12, [9824] = 15, [9826] = 15,
-    [9827] = 12, [9852] = 7, [9853] = 7, [9896] = 15, [9915] = 7, [10017] = 7,
-    [10234] = 10, [10253] = 17, [10266] = 15, [10278] = 25, [10308] = 12,
-    [10326] = 23, [10787] = 21, [10788] = 21, [10789] = 21, [10790] = 21,
-    [10792] = 21, [10793] = 21, [10795] = 21, [10796] = 21, [10798] = 21,
-    [10799] = 21, [10800] = 21, [10801] = 21, [10802] = 21, [10803] = 21,
-    [10804] = 21, [10838] = 16, [10839] = 16, [10851] = 3, [10852] = 7,
-    [10855] = 11, [10856] = 12, [10873] = 21, [10888] = 5, [10890] = 5,
-    [10898] = 19, [10899] = 19, [10900] = 19, [10901] = 19, [10911] = 1,
-    [10912] = 1, [10955] = 20, [10969] = 21, [10987] = 11, [11020] = 12,
-    [11201] = 11, [11264] = 7, [11273] = 15, [11274] = 15, [11275] = 15,
-    [11285] = 14, [11286] = 14, [11289] = 15, [11290] = 15, [11297] = 14,
-    [11428] = 12, [11430] = 12, [11436] = 11, [11446] = 1, [11572] = 15,
-    [11573] = 15, [11574] = 15, [11578] = 12, [11579] = 12, [11641] = 17, [11650] = 12, [11725] = 1,
-    [11726] = 1, [11820] = 7, [11831] = 7, [11836] = 12, [11876] = 12,
-    [11879] = 3, [11922] = 7, [11958] = 13, [11977] = 15, [12023] = 7,
-    [12024] = 7, [12054] = 15, [12096] = 5, [12098] = 10, [12252] = 7,
-    [12323] = 11, [12355] = 12, [12421] = 12, [12461] = 12, [12484] = 11,
-    [12485] = 11, [12486] = 11, [12494] = 7, [12528] = 9, [12531] = 11,
-    [12540] = 14, [12542] = 5, [12543] = 12, [12551] = 11, [12562] = 12,
-    [12674] = 7, [12705] = 11, [12721] = 15, [12730] = 5, [12734] = 12,
-    [12747] = 7, [12748] = 7, [12798] = 12, [12809] = 12, [12824] = 17,
-    [12825] = 17, [12826] = 17, [12946] = 9, [13005] = 12, [13099] = 7,
-    [13119] = 7, [13138] = 7, [13181] = 1, [13237] = 12, [13318] = 15,
-    [13323] = 17, [13327] = 14, [13443] = 15, [13445] = 15, [13534] = 3,
-    [13579] = 14, [13608] = 7, [13704] = 5, [13738] = 15, [13747] = 11,
-    [13808] = 12, [13810] = 11, [13819] = 21, [13902] = 12, [14030] = 7,
-    [14087] = 15, [14100] = 5, [14102] = 12, [14118] = 15, [14180] = 3,
-    [14207] = 11, [14308] = 13, [14309] = 13, [14326] = 5, [14327] = 5,
-    [14331] = 15, [14515] = 1, [14621] = 17, [14874] = 15, [14897] = 11,
-    [14902] = 12, [14903] = 15, [14907] = 7, [15063] = 7, [15091] = 14,
-    [15269] = 12, [15283] = 12, [15398] = 12, [15471] = 7, [15474] = 7,
-    [15487] = 9, [15531] = 7, [15532] = 7, [15534] = 17, [15535] = 12,
-    [15583] = 15, [15593] = 12, [15609] = 7, [15618] = 12, [15621] = 12,
-    [15652] = 12, [15655] = 12, [15744] = 14, [15752] = 3, [15753] = 12,
-    [15779] = 21, [15780] = 21, [15781] = 21, [15822] = 10, [15859] = 1,
-    [15878] = 12, [15970] = 10, [15976] = 15, [16045] = 18, [16046] = 14,
-    [16050] = 11, [16053] = 1, [16055] = 21, [16056] = 21, [16058] = 21,
-    [16059] = 21, [16060] = 21, [16075] = 12, [16080] = 21, [16081] = 21,
-    [16082] = 21, [16083] = 21, [16084] = 21, [16095] = 15, [16096] = 5,
-    [16097] = 17, [16104] = 12, [16350] = 12, [16393] = 15, [16403] = 15,
-    [16406] = 15, [16451] = 18, [16469] = 7, [16497] = 12, [16508] = 5,
-    [16509] = 15, [16566] = 7, [16568] = 11, [16600] = 12, [16707] = 17,
-    [16708] = 17, [16709] = 17, [16727] = 12, [16790] = 12, [16798] = 10,
-    [16803] = 12, [16838] = 9, [16869] = 12, [16922] = 12, [17011] = 12,
-    [17145] = 14, [17153] = 15, [17165] = 11, [17172] = 17, [17174] = 11,
-    [17229] = 21, [17276] = 12, [17277] = 14, [17286] = 12, [17293] = 12,
-    [17308] = 12, [17405] = 1, [17450] = 21, [17453] = 21, [17454] = 21,
-    [17455] = 21, [17456] = 21, [17458] = 21, [17459] = 21, [17460] = 21,
-    [17461] = 21, [17462] = 21, [17463] = 21, [17464] = 21, [17465] = 21,
-    [17481] = 21, [17500] = 12, [17504] = 15, [17738] = 17, [17928] = 5,
-    [18075] = 15, [18078] = 15, [18093] = 12, [18103] = 12, [18106] = 15,
-    [18118] = 11, [18144] = 12, [18200] = 15, [18202] = 15, [18223] = 11,
-    [18278] = 9, [18327] = 9, [18328] = 11, [18363] = 21, [18395] = 12,
-    [18425] = 9, [18431] = 5, [18469] = 9, [18498] = 9, [18503] = 17,
-    [18608] = 16, [18610] = 16, [18647] = 18, [18657] = 10, [18658] = 10,
-    [18763] = 12, [18802] = 11, [18812] = 12, [18972] = 11, [18989] = 21,
-    [18990] = 21, [18991] = 21, [18992] = 21, [19128] = 12, [19134] = 5,
-    [19136] = 12, [19137] = 11, [19185] = 7, [19229] = 7, [19364] = 12,
-    [19386] = 10, [19393] = 9, [19408] = 5, [19410] = 12, [19469] = 1,
-    [19482] = 12, [19496] = 11, [19501] = 2, [19503] = 2, [19641] = 12,
-    [19718] = 3, [19769] = 12, [19771] = 15, [19780] = 12, [19784] = 12,
-    [19821] = 9, [19970] = 7, [19971] = 7, [19972] = 7, [19973] = 7,
-    [19974] = 7, [19975] = 7, [20066] = 14, [20170] = 12, [20253] = 12,
-    [20276] = 12, [20277] = 12, [20310] = 12, [20511] = 5, [20549] = 12,
-    [20604] = 1, [20614] = 12, [20615] = 12, [20654] = 7, [20663] = 10,
-    [20669] = 10, [20683] = 12, [20685] = 12, [20699] = 7, [20706] = 19,
-    [20740] = 1, [20882] = 1, [20907] = 15, [20908] = 15, [20989] = 10,
-    [21099] = 12, [21152] = 12, [21330] = 5, [21331] = 7, [21748] = 12,
-    [21749] = 12, [21869] = 5, [21898] = 5, [21949] = 15, [21990] = 12,
-    [22127] = 7, [22274] = 17, [22289] = 12, [22356] = 11, [22415] = 7,
-    [22419] = 3, [22424] = 14, [22427] = 12, [22519] = 7, [22566] = 17,
-    [22570] = 14, [22592] = 12, [22639] = 11, [22645] = 7, [22666] = 9,
-    [22678] = 5, [22686] = 5, [22691] = 3, [22692] = 12, [22717] = 21,
-    [22718] = 21, [22719] = 21, [22720] = 21, [22721] = 21, [22722] = 21,
-    [22723] = 21, [22724] = 21, [22744] = 7, [22752] = 19, [22800] = 7,
-    [22884] = 5, [22914] = 11, [22915] = 12, [22919] = 11, [22924] = 7,
-    [22994] = 7, [23039] = 14, [23103] = 12, [23113] = 14, [23161] = 21,
-    [23207] = 9, [23214] = 21, [23219] = 21, [23220] = 21, [23221] = 21,
-    [23222] = 21, [23223] = 21, [23225] = 21, [23227] = 21, [23228] = 21,
-    [23229] = 21, [23238] = 21, [23239] = 21, [23240] = 21, [23241] = 21,
-    [23242] = 21, [23243] = 21, [23246] = 21, [23247] = 21, [23248] = 21,
-    [23249] = 21, [23250] = 21, [23251] = 21, [23252] = 21, [23275] = 5,
-    [23338] = 21, [23364] = 12, [23365] = 3, [23454] = 12, [23509] = 21,
-    [23510] = 21, [23567] = 16, [23568] = 16, [23569] = 16, [23600] = 11,
-    [23603] = 17, [23618] = 12, [23694] = 7, [23696] = 16, [23918] = 9,
-    [23919] = 12, [23953] = 11, [24004] = 10, [24053] = 17, [24110] = 7,
-    [24118] = 15, [24119] = 15, [24120] = 15, [24132] = 10, [24133] = 10,
-    [24152] = 7, [24192] = 15, [24213] = 12, [24225] = 11, [24242] = 21,
-    [24252] = 21, [24259] = 9, [24327] = 1, [24331] = 15, [24332] = 15,
-    [24333] = 12, [24335] = 10, [24360] = 10, [24375] = 12, [24394] = 12,
-    [24412] = 16, [24413] = 16, [24414] = 16, [24415] = 11, [24576] = 21,
-    [24600] = 12, [24648] = 7, [24664] = 10, [24671] = 12, [24687] = 9,
-    [24698] = 14, [24712] = 17, [24713] = 17, [24735] = 17, [24736] = 17,
-    [24778] = 10, [25022] = 11, [25049] = 14, [25056] = 12, [25057] = 3,
-    [25187] = 11, [25189] = 12, [25260] = 5, [25654] = 12, [25655] = 3,
-    [25675] = 21, [25771] = 25, [25809] = 11, [25815] = 5, [25852] = 12,
-    [25858] = 21, [25859] = 21, [25863] = 21, [25953] = 21, [25999] = 7,
-    [26042] = 5, [26054] = 21, [26055] = 21, [26056] = 21, [26069] = 9,
-    [26070] = 5, [26071] = 7, [26078] = 11, [26108] = 2, [26141] = 11,
-    [26143] = 11, [26157] = 17, [26180] = 10, [26211] = 11, [26272] = 17,
-    [26273] = 17, [26274] = 17, [26379] = 11, [26580] = 5, [26641] = 5,
-    [26655] = 21, [26740] = 1, [27555] = 15, [27556] = 15, [27559] = 9,
-    [27565] = 18, [27581] = 3, [27607] = 19, [27610] = 5, [27615] = 12,
-    [27619] = 13, [27634] = 11, [27638] = 15, [27640] = 11, [27641] = 5,
-    [27758] = 12, [27760] = 17, [27880] = 12, [27990] = 5, [27993] = 11,
-    [28270] = 17, [28271] = 17, [28272] = 17, [28314] = 12, [28315] = 5,
-    [28445] = 12, [28456] = 14, [28725] = 12, [28858] = 7, [28911] = 15,
-    [28913] = 15, [28991] = 7, [29059] = 21, [29168] = 5, [29407] = 11,
-    [29419] = 5, [29544] = 5, [29685] = 5, [29848] = 17, [29849] = 7,
-    [29915] = 15, [29943] = 9, [30001] = 5, [30002] = 5, [30020] = 16,
-    [30094] = 7, [30174] = 21, [30225] = 9, [30285] = 15, [31365] = 5,
-    [31700] = 21,
+    [30] = true,  -- sap
 }
 
 -- Check if BuffLib is available with full mechanic support
@@ -5541,7 +5373,7 @@ function CleveRoids.HasBuffLib()
         and BuffLib.SpellData.GetMechanic
 end
 
--- Get mechanic for a spell ID (uses BuffLib if available, otherwise built-in table)
+-- Get mechanic for a spell ID (uses BuffLib if available, otherwise ClassicAPI's DBC reader)
 function CleveRoids.GetSpellMechanic(spellID)
     if not spellID or spellID <= 0 then return 0 end
 
@@ -5554,8 +5386,35 @@ function CleveRoids.GetSpellMechanic(spellID)
         end
     end
 
-    -- Fall back to built-in table
-    return CleveRoids.CCSpellMechanics[spellID] or 0
+    -- Fall back to ClassicAPI's Spell.dbc reader (always present; covers every spell)
+    return CleveRoids.ClassicAPI.GetSpellMechanicByID(spellID) or 0
+end
+
+-- School name -> spell-school mask bit (WoW SPELL_SCHOOL_MASK_*).
+local LOCKOUT_SCHOOL_MASK = {
+    physical = 1, holy = 2, fire = 4, nature = 8, frost = 16, shadow = 32, arcane = 64,
+}
+
+-- Is `bit` set in `mask`? Shift right past `bit`, then test the low bit with
+-- math.mod (the % operator is 5.1-only; 1.12 is Lua 5.0, but math.mod exists).
+local function SchoolMaskHasBit(mask, bit)
+    if not mask or mask < bit then return false end
+    return math.mod(math.floor(mask / bit), 2) == 1
+end
+
+-- [locked] / [locked:school] -- player is under a spell-school interrupt lockout
+-- (Counterspell / Kick / Pummel / Earth Shock), read from C_LossOfControl. This
+-- is the lockout no debuff scan can detect; full silences stay on [mycc:silence].
+-- school nil/true = any school kicked; a name matches that school's mask bit.
+function CleveRoids.ValidateSchoolLocked(school)
+    local mask = CleveRoids.ClassicAPI.GetSchoolLockout()
+    if not mask or mask == 0 then return false end
+    if school == nil or school == true or school == "" then
+        return true
+    end
+    local bit = LOCKOUT_SCHOOL_MASK[string.lower(school)]
+    if not bit then return false end
+    return SchoolMaskHasBit(mask, bit)
 end
 
 -- Validate CC on a unit (target, focus, player, etc.)
@@ -5570,19 +5429,6 @@ function CleveRoids.ValidateUnitCC(unit, ccType)
         return CleveRoids.ValidateUnitAnyCrowdControl(unit)
     end
 
-    -- Check if this CC type maps to a group of mechanics
-    local mechanicGroup = CleveRoids.CCMechanicGroups[ccTypeLower]
-    if mechanicGroup then
-        -- Check all mechanics in the group (e.g., stun checks 12, 14, 30)
-        for _, mechanic in ipairs(mechanicGroup) do
-            if CleveRoids.ValidateUnitCCSingleMechanic(unit, mechanic) then
-                return true
-            end
-        end
-        return false
-    end
-
-    -- Single mechanic lookup
     local mechanic = CleveRoids.CCMechanics[ccTypeLower]
     if not mechanic then return false end
 
@@ -5748,6 +5594,36 @@ function CleveRoids.IsUnitInMeleeRange(unit, cleaveRange)
     return CheckInteractDistance(unit, 3)
 end
 
+-- Next-melee queue detection for [osp]/[noosp].
+-- Ground truth = IsCurrentAction on the HS/Cleave (etc.) action-bar slot — that is
+-- what lights up. GetCurrentCastingInfo()'s onswing flag can stick true after a
+-- cancel/toggle and block [noosp] forever while the bar stays dark.
+local ON_SWING_ACTION_TEXTURES = {
+    ["Interface\\Icons\\Ability_Rogue_Ambush"] = true,       -- Heroic Strike
+    ["Interface\\Icons\\Ability_Warrior_Cleave"] = true,     -- Cleave
+    ["Interface\\Icons\\Ability_Druid_Maul"] = true,          -- Maul
+    ["Interface\\Icons\\Ability_MeleeDamage"] = true,         -- Raptor Strike (classic)
+    ["Interface\\Icons\\Ability_Hunter_SwiftStrike"] = true,  -- Raptor Strike (alt)
+}
+
+function CleveRoids.IsOnSwingQueuedOnActionBar()
+    local isCurrent = (CleveRoids.Hooks and CleveRoids.Hooks.IsCurrentAction) or IsCurrentAction
+    if not isCurrent then return false end
+    for slot = 1, 120 do
+        if isCurrent(slot) then
+            local tex = GetActionTexture(slot)
+            if tex and ON_SWING_ACTION_TEXTURES[tex] then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+function CleveRoids.IsOnSwingPending()
+    return CleveRoids.IsOnSwingQueuedOnActionBar() and true or false
+end
+
 -- Count mode filter functions for compound conditionals.
 -- Allows count mode to combine checks: [meleerange:facing>1] counts enemies
 -- in melee range AND facing. The filter name is the "name" field in count args.
@@ -5761,10 +5637,22 @@ local countModeFilters = {
     meleerange = function(unit)
         return CleveRoids.IsUnitInMeleeRange(unit, true)
     end,
+    -- Enemies currently targeting the player (for Retaliation / AoE CDs)
+    tgtplayer = function(unit)
+        return UnitIsUnit(unit .. "target", "player") == 1
+    end,
+    -- HP% > 50 (avoid blowing long CDs on dying packs)
+    hp50 = function(unit)
+        local API = CleveRoids.ClassicAPI
+        local hp = API and API.GetUnitHealth and API.GetUnitHealth(unit) or UnitHealth(unit)
+        local maxHp = API and API.GetUnitMaxHealth and API.GetUnitMaxHealth(unit) or UnitHealthMax(unit)
+        if not maxHp or maxHp <= 0 then return false end
+        return (100 * hp / maxHp) > 50
+    end,
 }
 
 -- Parse the name field of count mode args for optional filter and distance threshold.
--- Supports: "facing", "behind", "meleerange" (filter only),
+-- Supports: "facing", "behind", "meleerange", "tgtplayer", "hp50" (filter only),
 --           "30" (distance only),
 --           "30:facing" or "30facing" (distance + filter)
 -- Returns: filterFunc or nil, distanceThreshold or nil
@@ -5793,10 +5681,13 @@ local function ParseCountModeFilter(name)
     return nil, nil
 end
 
--- Resolve virtual unit tokens (focus, focustarget) to real WoW 1.12 unit tokens.
--- pfUI emulates focus via label+id (e.g. "party2").
+-- Resolve virtual unit tokens (focus, focustarget, leader, leadertarget, leaderpet,
+-- leaderpettarget, pettarget, partylhp, partylrawhp, raid marks) to real unit tokens.
 -- Returns resolved token or nil if the unit cannot be resolved.
 local function ResolveFocusUnit(unit)
+    if CleveRoids.ResolveVirtualUnit then
+        return CleveRoids.ResolveVirtualUnit(unit)
+    end
     if unit == "focus" then
         return CleveRoids.GetFocusUnitId()
     elseif unit == "focustarget" then
@@ -5806,14 +5697,288 @@ local function ResolveFocusUnit(unit)
     return unit
 end
 
+-- Builds a Keyword validator for a specific power slot (Enum.PowerType) read as a
+-- percentage, mirroring [power]/[mypower]. condKey is the conditional name;
+-- unitDefault is "player" (self) or "target" (@unit-overridable); powerType is the
+-- Enum.PowerType id. Handles the multi-comparison (>50&<80) branch like [power].
+local function MakeTypedPowerKeyword(condKey, unitDefault, powerType)
+    return function(conditionals)
+        return Multi(conditionals[condKey], function(args)
+            if type(args) ~= "table" then return false end
+            local unit = (unitDefault == "player") and "player" or (conditionals.target or "target")
+
+            if args.comparisons and type(args.comparisons) == "table" then
+                if not UnitExists(unit) then return false end
+                local maxPower = CleveRoids.ClassicAPI.UnitPowerMax(unit, powerType)
+                if not maxPower or maxPower <= 0 then return false end
+                local powerPercent = 100 * CleveRoids.ClassicAPI.UnitPower(unit, powerType) / maxPower
+                for _, comp in ipairs(args.comparisons) do
+                    if not CleveRoids.operators[comp.operator] then return false end
+                    if not CleveRoids.comparators[comp.operator](powerPercent, comp.amount) then return false end
+                end
+                return true
+            end
+
+            return CleveRoids.ValidateTypedPower(unit, powerType, args.operator, args.amount)
+        end, conditionals, condKey)
+    end
+end
+
+local PET_HAPPINESS_STATES = {
+    unhappy = 1,
+    content = 2,
+    happy = 3,
+}
+
+local function ResolvePetHappinessState(value)
+    local state = tonumber(value)
+    if state then
+        return state
+    end
+    if type(value) ~= "string" then
+        return nil
+    end
+    return PET_HAPPINESS_STATES[GetLowercaseString(value)]
+end
+
+-- ClassicAPI's totem bar is TBC-ordered: SUMMON_TOTEM_SLOT1..4 in Spell.dbc.
+local TOTEM_SLOTS = {
+    fire  = 1,
+    earth = 2,
+    water = 3,
+    air   = 4,
+    ["1"] = 1,
+    ["2"] = 2,
+    ["3"] = 3,
+    ["4"] = 4,
+}
+
+-- Resolve a [totem:X] argument to a slot. An element name or slot number names
+-- the slot directly; anything else is matched against the name of the totem
+-- standing in each slot, so [totem:Searing_Totem] asks for that totem rather
+-- than "whatever is in the fire slot". nil when neither matches -- which
+-- includes naming a totem that is not currently out.
+local function ResolveTotemSlot(name)
+    if type(name) ~= "string" or name == "" then return nil end
+
+    local searchName = GetLowercaseString(
+        CleveRoids.Trim(string.gsub(CleveRoids.StripRank(name), "_", " ")))
+
+    local slot = TOTEM_SLOTS[searchName]
+    if slot then return slot end
+
+    for i = 1, 4 do
+        -- Second return, not the first: GetTotemInfo's haveTotem reports whether
+        -- the player carries the slot's TOOL item, not whether a totem is out.
+        local _, totemName = GetTotemInfo(i)
+        if totemName and totemName ~= "" and GetLowercaseString(totemName) == searchName then
+            return i
+        end
+    end
+end
+
+-- True while any totem slot has a timer running. Drives the OnUpdate re-test
+-- that keeps [totem:X<N] icons honest -- see the caller for why polling is the
+-- only option. GetTotemTimeLeft, not GetTotemInfo: this asks whether a countdown
+-- is in progress (a totem with no timer has nothing to go stale), and it reads
+-- the slot alone, where GetTotemInfo walks the bags for the tool item.
+function CleveRoids.AnyTotemTimerRunning()
+    for i = 1, 4 do
+        local timeLeft = GetTotemTimeLeft(i)
+        if timeLeft and timeLeft > 0 then return true end
+    end
+    return false
+end
+
+-- Creature entry for a totem summon spell (Spell.dbc EffectMiscValue on
+-- SUMMON_TOTEM_SLOT1..4 = effects 87-90). Used with ClosestUnitPosition for
+-- [totemdistance] — ClassicAPI has no GetTotemDistance / GetTotemGUID.
+local function TotemCreatureEntry(spellID)
+    if not spellID or spellID == 0 then return nil end
+    if not (C_Spell and C_Spell.GetSpellEffectInfo) then return nil end
+    local fx = C_Spell.GetSpellEffectInfo(spellID)
+    if not fx then return nil end
+    for i = 1, 3 do
+        local e = fx[i]
+        if e and e.effect and e.effect >= 87 and e.effect <= 90
+            and e.miscValue and e.miscValue > 0 then
+            return e.miscValue
+        end
+    end
+    return nil
+end
+
+-- Nearest yards to any active totem slot (GetTotemInfo), via ClosestUnitPosition
+-- on that summon's creature entry. No TargetTotem (would steal current target).
+-- Invisible / out-of-sync totems count as 1e9 so [totemdistance:>30] still passes.
+-- Caveat: ClosestUnitPosition matches any visible creature of that entry (another
+-- shaman's same totem nearby can read as "close").
+function CleveRoids.GetNearestTotemDistance()
+    if type(GetTotemInfo) ~= "function" then return nil end
+    local nearest = nil
+    local anyActive = false
+    local anyUnreachable = false
+    for slot = 1, 4 do
+        local _, name, _, _, _, _, spellID = GetTotemInfo(slot)
+        if name and name ~= "" then
+            anyActive = true
+            local d = nil
+            if type(ClosestUnitPosition) == "function" then
+                local entry = TotemCreatureEntry(spellID)
+                if entry then
+                    local _, _, dist = ClosestUnitPosition(entry)
+                    if type(dist) == "number" then
+                        d = dist
+                    end
+                end
+            end
+            if type(d) == "number" then
+                if not nearest or d < nearest then
+                    nearest = d
+                end
+            else
+                anyUnreachable = true
+            end
+        end
+    end
+    if not anyActive then return nil end
+    if nearest ~= nil then return nearest end
+    if anyUnreachable then return 1e9 end
+    return nil
+end
+
+-- [totem:X] / [nototem:X], shaped like the aura validators: X is a plain name or
+-- a parsed comparison entry, comparisons read seconds left, and `#N` stack
+-- comparisons read 1 for a standing totem -- a totem is either up or it isn't.
+--
+-- An empty slot reads -1 on both axes, the same "missing counts as least" the
+-- aura path uses, so [totem:Searing_Totem<5] passes while the totem is expiring
+-- AND while it is absent: one clause for the whole recast macro.
+local function ValidateTotem(args)
+    if not args then return false end
+
+    if type(args) ~= "table" then
+        args = { name = args }
+    end
+
+    local remaining, stacks = -1, -1
+    local slot = ResolveTotemSlot(args.name)
+    if slot then
+        -- Occupancy comes from the name, not from the time left: a totem whose
+        -- summon spell carries no SpellDuration row reads 0 seconds, and that is
+        -- "up with no timer", not "absent".
+        local _, totemName = GetTotemInfo(slot)
+        if totemName and totemName ~= "" then
+            stacks = 1
+            remaining = GetTotemTimeLeft(slot)
+        end
+    end
+
+    local ops = CleveRoids.operators
+    local cmp = CleveRoids.comparators
+
+    -- Multi-comparison (e.g. >2&<8) - ALL must pass
+    if args.comparisons and type(args.comparisons) == "table" then
+        for _, comp in ipairs(args.comparisons) do
+            if not ops[comp.operator] then return false end
+            local value = comp.checkStacks and stacks or remaining
+            if not cmp[comp.operator](value, comp.amount) then return false end
+        end
+        return true
+    end
+
+    if not args.amount and not args.operator and not args.checkStacks then
+        return stacks == 1
+    elseif args.amount and ops[args.operator] then
+        return cmp[args.operator](args.checkStacks and stacks or remaining, args.amount)
+    else
+        return false
+    end
+end
+
 -- A list of Conditionals and their functions to validate them
 CleveRoids.Keywords = {
+    -- [button:N] — N is the button that INVOKED this action (1=Left, 2=Right,
+    -- 3=Middle, 4/5=extra), not one held down as a modifier. That is retail's
+    -- meaning, and it is why a keybind press counts as button 1: retail activates
+    -- through the left-click path, so [button:1] passes for a keybind and a
+    -- left-click alike, while [button:2] passes only for an actual right-click.
+    -- Routed through Multi so OR/AND lists behave like every other argument
+    -- conditional ([button:1/2] = invoked by left or right).
+    --
+    -- Bare [button] / [nobutton] ask whether a click drove this at all -- the one
+    -- thing the underlying data says that retail's conditional cannot express,
+    -- and the practical "activated by a keybind, not a click" test.
+    button = function(conditionals)
+        if type(conditionals.button) ~= "table" then
+            return CleveRoids.WasClickActivated()
+        end
+        local invoking = CleveRoids.GetActivatingButton()
+        return Multi(conditionals.button, function(button)
+            return CleveRoids.buttons[button] == invoking
+        end, conditionals, "button")
+    end,
+
+    nobutton = function(conditionals)
+        if type(conditionals.nobutton) ~= "table" then
+            return not CleveRoids.WasClickActivated()
+        end
+        local invoking = CleveRoids.GetActivatingButton()
+        return NegatedMulti(conditionals.nobutton, function(button)
+            return CleveRoids.buttons[button] ~= invoking
+        end, conditionals, "nobutton")
+    end,
+
+    -- [totem:X] — X names a totem-bar slot (fire/earth/water/air, or 1-4) or the
+    -- totem itself ([totem:Searing_Totem]). Bare [totem] takes the action as its
+    -- argument, as [mybuff] does, so /cast [nototem] Searing Totem is the whole
+    -- recast macro. Time and stack comparisons follow the aura precedent; see
+    -- ValidateTotem.
+    totem = function(conditionals)
+        return Multi(conditionals.totem, function(v)
+            return ValidateTotem(v)
+        end, conditionals, "totem")
+    end,
+
+    nototem = function(conditionals)
+        return NegatedMulti(conditionals.nototem, function(v)
+            return not ValidateTotem(v)
+        end, conditionals, "nototem")
+    end,
+
+    -- [totemdistance:>30] — nearest active totem (any slot) is farther than 30y.
+    -- No active totem → false. Requires ClassicAPI GetTotemInfo + ClosestUnitPosition.
+    totemdistance = function(conditionals)
+        return Multi(conditionals.totemdistance, function(args)
+            if type(args) ~= "table" or not args.operator or not args.amount then
+                return false
+            end
+            local d = CleveRoids.GetNearestTotemDistance()
+            if d == nil then return false end
+            return CleveRoids.comparators[args.operator](d, args.amount)
+        end, conditionals, "totemdistance")
+    end,
+
+    nototemdistance = function(conditionals)
+        return NegatedMulti(conditionals.nototemdistance, function(args)
+            if type(args) ~= "table" or not args.operator or not args.amount then
+                return false
+            end
+            local d = CleveRoids.GetNearestTotemDistance()
+            if d == nil then return false end
+            return not CleveRoids.comparators[args.operator](d, args.amount)
+        end, conditionals, "nototemdistance")
+    end,
+
+    -- No @unit → current target (same as retail / ClassicAPI). Without this
+    -- fallback, `/stopmacro [exists,…]` after `/target` always fails because
+    -- conditionals.target stays nil when FixEmptyTarget is not applied.
     exists = function(conditionals)
-        return UnitExists(conditionals.target)
+        return UnitExists(conditionals.target or "target")
     end,
 
     noexists = function(conditionals)
-        return not UnitExists(conditionals.target)
+        return not UnitExists(conditionals.target or "target")
     end,
 
     -- Check if player has NO current target (target frame is empty)
@@ -5830,15 +5995,15 @@ CleveRoids.Keywords = {
     end,
 
     help = function(conditionals)
-        return conditionals.help and conditionals.target and UnitExists(conditionals.target) and UnitCanAssist("player", conditionals.target)
+        return conditionals.help and conditionals.target and CleveRoids.IsHelpUnit(conditionals.target)
     end,
 
-    -- [nohelp] - Target is NOT friendly (cannot assist)
+    -- [nohelp] - Target is NOT friendly (cannot assist / not UnitIsFriend)
     nohelp = function(conditionals)
         if not conditionals.target or not UnitExists(conditionals.target) then
             return true
         end
-        return not UnitCanAssist("player", conditionals.target)
+        return not CleveRoids.IsHelpUnit(conditionals.target)
     end,
 
     harm = function(conditionals)
@@ -5982,17 +6147,28 @@ CleveRoids.Keywords = {
     end,
 
     stealth = function(conditionals)
-        return (
-            (CleveRoids.playerClass == "ROGUE" and CleveRoids.ValidatePlayerBuff(CleveRoids.Localized.Spells["Stealth"]))
-            or (CleveRoids.playerClass == "DRUID" and CleveRoids.ValidatePlayerBuff(CleveRoids.Localized.Spells["Prowl"]))
-        )
+        return CleveRoids.ClassicAPI.IsStealthed()
     end,
 
     nostealth = function(conditionals)
-        return (
-            (CleveRoids.playerClass == "ROGUE" and not CleveRoids.ValidatePlayerBuff(CleveRoids.Localized.Spells["Stealth"]))
-            or (CleveRoids.playerClass == "DRUID" and not CleveRoids.ValidatePlayerBuff(CleveRoids.Localized.Spells["Prowl"]))
-        )
+        return not CleveRoids.ClassicAPI.IsStealthed()
+    end,
+
+    mounted = function(conditionals)
+        return CleveRoids.ClassicAPI.IsMounted()
+    end,
+
+    nomounted = function(conditionals)
+        return not CleveRoids.ClassicAPI.IsMounted()
+    end,
+
+    standing = function(conditionals)
+        return CleveRoids.ClassicAPI.GetPlayerStandState() == 0
+    end,
+
+    -- Any non-standing pose (sit / chair / sleep / kneel)
+    sitting = function(conditionals)
+        return CleveRoids.ClassicAPI.GetPlayerStandState() ~= 0
     end,
 
     casting = function(conditionals)
@@ -6116,8 +6292,8 @@ CleveRoids.Keywords = {
 
     -- [set:SetName>=N] — true if equipped piece count of named set meets comparison
     -- [set:SetName] — true if any pieces of that set are equipped (count > 0)
-    -- [set:123>=3] — numeric IDs also supported (Nampower only, no Reliquary needed)
-    -- Name lookup requires Reliquary (for DBC set name); ID lookup requires Nampower
+    -- [set:123>=3] — numeric IDs also supported
+    -- Both name and ID lookups resolve from ItemSet.dbc via ClassicAPI
     set = function(conditionals)
         return Multi(conditionals.set, function(args)
             if type(args) == "table" and args.operator and args.amount then
@@ -6173,6 +6349,26 @@ CleveRoids.Keywords = {
         end, conditionals, "noset")
     end,
 
+    -- [equipset:Name] — true if the saved equipment set "Name" is currently
+    -- equipped (ClassicAPI equipment manager, distinct from [set] tier pieces).
+    -- [equipset:Raid/PvP] = either set equipped. Names are case-sensitive; use _
+    -- for spaces, e.g. [equipset:My_Raid_Set].
+    equipset = function(conditionals)
+        return Multi(conditionals.equipset, function(v)
+            local name = (type(v) == "table") and v.name or v
+            return CleveRoids.ClassicAPI.IsEquipmentSetEquipped(name)
+        end, conditionals, "equipset")
+    end,
+
+    -- [noequipset:Name] — true if that equipment set is NOT currently equipped.
+    -- [noequipset:Raid/PvP] = neither equipped (De Morgan's).
+    noequipset = function(conditionals)
+        return NegatedMulti(conditionals.noequipset, function(v)
+            local name = (type(v) == "table") and v.name or v
+            return not CleveRoids.ClassicAPI.IsEquipmentSetEquipped(name)
+        end, conditionals, "noequipset")
+    end,
+
     -- [inbag:Item] — true if item exists in bags or equipped
     -- [inbag:Item<12] — true if bag count of Item is less than 12
     -- Supports multi-value: [inbag:Item1/Item2 inbag:Item3] = (Item1 OR Item2) AND Item3
@@ -6204,23 +6400,27 @@ CleveRoids.Keywords = {
     end,
 
     dead = function(conditionals)
-        if not conditionals.target then return false end
-        return CleveRoids.IsUnitDeadOrGhost(conditionals.target)
+        local unit = conditionals.target or "target"
+        if not UnitExists(unit) then return false end
+        return CleveRoids.IsUnitDeadOrGhost(unit)
     end,
 
     alive = function(conditionals)
-        if not conditionals.target then return false end
-        return not CleveRoids.IsUnitDeadOrGhost(conditionals.target)
+        local unit = conditionals.target or "target"
+        if not UnitExists(unit) then return false end
+        return not CleveRoids.IsUnitDeadOrGhost(unit)
     end,
 
     noalive = function(conditionals)
-        if not conditionals.target then return false end
-        return CleveRoids.IsUnitDeadOrGhost(conditionals.target)
+        local unit = conditionals.target or "target"
+        if not UnitExists(unit) then return false end
+        return CleveRoids.IsUnitDeadOrGhost(unit)
     end,
 
     nodead = function(conditionals)
-        if not conditionals.target then return false end
-        return not CleveRoids.IsUnitDeadOrGhost(conditionals.target)
+        local unit = conditionals.target or "target"
+        if not UnitExists(unit) then return false end
+        return not CleveRoids.IsUnitDeadOrGhost(unit)
     end,
 
     reactive = function(conditionals)
@@ -6252,13 +6452,10 @@ CleveRoids.Keywords = {
             local itemName = name
             local slotNum = tonumber(name)
             if slotNum and slotNum >= 1 and slotNum <= 19 then
-                -- Resolve slot number to item name
-                local link = GetInventoryItemLink("player", slotNum)
-                if link then
-                    local _, _, extractedName = string.find(link, "%[(.+)%]")
-                    if extractedName then
-                        itemName = extractedName
-                    end
+                -- Resolve slot number to item name (decorated, no link build)
+                local extractedName = C_Item.GetItemName({ equipmentSlotIndex = slotNum })
+                if extractedName then
+                    itemName = extractedName
                 end
             end
 
@@ -6290,13 +6487,10 @@ CleveRoids.Keywords = {
             local itemName = name
             local slotNum = tonumber(name)
             if slotNum and slotNum >= 1 and slotNum <= 19 then
-                -- Resolve slot number to item name
-                local link = GetInventoryItemLink("player", slotNum)
-                if link then
-                    local _, _, extractedName = string.find(link, "%[(.+)%]")
-                    if extractedName then
-                        itemName = extractedName
-                    end
+                -- Resolve slot number to item name (decorated, no link build)
+                local extractedName = C_Item.GetItemName({ equipmentSlotIndex = slotNum })
+                if extractedName then
+                    itemName = extractedName
                 end
             end
 
@@ -6401,14 +6595,14 @@ CleveRoids.Keywords = {
         local groupVal = conditionals.group
         -- Boolean form [group] - check if in any group
         if groupVal == true then
-            return GetNumPartyMembers() > 0 or GetNumRaidMembers() > 0
+            return IsInGroup()
         end
         -- Value form [group:party] or [group:raid] or [group:party/raid]
         return Multi(groupVal, function(groupType)
             if groupType == "party" then
-                return GetNumPartyMembers() > 0
+                return IsInGroup()
             elseif groupType == "raid" then
-                return GetNumRaidMembers() > 0
+                return IsInRaid()
             end
             return false
         end, conditionals, "group")
@@ -6420,14 +6614,14 @@ CleveRoids.Keywords = {
         local groupVal = conditionals.nogroup
         -- Boolean form [nogroup] - check if not in any group
         if groupVal == true then
-            return GetNumPartyMembers() == 0 and GetNumRaidMembers() == 0
+            return not IsInGroup()
         end
         -- Value form with De Morgan's law via NegatedMulti
         return NegatedMulti(groupVal, function(groupType)
             if groupType == "party" then
-                return GetNumPartyMembers() == 0
+                return not IsInGroup()
             elseif groupType == "raid" then
-                return GetNumRaidMembers() == 0
+                return not IsInRaid()
             end
             return true
         end, conditionals, "nogroup")
@@ -6515,6 +6709,87 @@ CleveRoids.Keywords = {
         end, conditionals, "nomydebuff")
     end,
 
+    -- Dispel-type conditionals (ClassicAPI C_UnitAuras).
+    -- [magic]/[curse]/[disease]/[poison] = target has a debuff of that dispel
+    -- type; [dispellable] = target has any dispellable debuff. These require the
+    -- ClassicAPI client mod; without it the positive checks return false and the
+    -- negated checks return true (graceful degradation — vanilla cannot read
+    -- aura dispel types). They honor @unit like [debuff] does.
+    magic = function(conditionals)
+        if not conditionals.target then return false end
+        return CleveRoids.ClassicAPI.UnitHasDispelType(conditionals.target, "Magic")
+    end,
+
+    nomagic = function(conditionals)
+        if not conditionals.target then return false end
+        return not CleveRoids.ClassicAPI.UnitHasDispelType(conditionals.target, "Magic")
+    end,
+
+    curse = function(conditionals)
+        if not conditionals.target then return false end
+        return CleveRoids.ClassicAPI.UnitHasDispelType(conditionals.target, "Curse")
+    end,
+
+    nocurse = function(conditionals)
+        if not conditionals.target then return false end
+        return not CleveRoids.ClassicAPI.UnitHasDispelType(conditionals.target, "Curse")
+    end,
+
+    disease = function(conditionals)
+        if not conditionals.target then return false end
+        return CleveRoids.ClassicAPI.UnitHasDispelType(conditionals.target, "Disease")
+    end,
+
+    nodisease = function(conditionals)
+        if not conditionals.target then return false end
+        return not CleveRoids.ClassicAPI.UnitHasDispelType(conditionals.target, "Disease")
+    end,
+
+    poison = function(conditionals)
+        if not conditionals.target then return false end
+        return CleveRoids.ClassicAPI.UnitHasDispelType(conditionals.target, "Poison")
+    end,
+
+    nopoison = function(conditionals)
+        if not conditionals.target then return false end
+        return not CleveRoids.ClassicAPI.UnitHasDispelType(conditionals.target, "Poison")
+    end,
+
+    dispellable = function(conditionals)
+        if not conditionals.target then return false end
+        return CleveRoids.ClassicAPI.UnitHasDispelType(conditionals.target, "any")
+    end,
+
+    nodispellable = function(conditionals)
+        if not conditionals.target then return false end
+        return not CleveRoids.ClassicAPI.UnitHasDispelType(conditionals.target, "any")
+    end,
+
+    -- Buff-side dispel-type conditionals (offensive dispel / strip / purge).
+    -- [magicbuff] = unit has a dispellable Magic buff (the only kind offensive
+    -- dispel removes in 1.12); [dispellablebuff] = unit has any dispel-typed
+    -- buff. Same ClassicAPI requirement and graceful degradation as the debuff
+    -- variants. The `true` arg makes UnitHasDispelType scan buffs, not debuffs.
+    magicbuff = function(conditionals)
+        if not conditionals.target then return false end
+        return CleveRoids.ClassicAPI.UnitHasDispelType(conditionals.target, "Magic", true)
+    end,
+
+    nomagicbuff = function(conditionals)
+        if not conditionals.target then return false end
+        return not CleveRoids.ClassicAPI.UnitHasDispelType(conditionals.target, "Magic", true)
+    end,
+
+    dispellablebuff = function(conditionals)
+        if not conditionals.target then return false end
+        return CleveRoids.ClassicAPI.UnitHasDispelType(conditionals.target, "any", true)
+    end,
+
+    nodispellablebuff = function(conditionals)
+        if not conditionals.target then return false end
+        return not CleveRoids.ClassicAPI.UnitHasDispelType(conditionals.target, "any", true)
+    end,
+
     power = function(conditionals)
         return Multi(conditionals.power, function(args)
             if type(args) ~= "table" then return false end
@@ -6565,6 +6840,17 @@ CleveRoids.Keywords = {
             return CleveRoids.ValidatePower("player", args.operator, args.amount)
         end, conditionals, "mypower")
     end,
+
+    -- Type-specific power reads (percentage), for the SPECIFIC slot rather than the
+    -- unit's primary power. No prefix = target (@unit-overridable), my = player.
+    -- e.g. [@target,mana:<15] catches a near-OOM caster; [myenergy:>50] gates a
+    -- druid's cat rotation regardless of form.
+    mana = MakeTypedPowerKeyword("mana", "target", 0),
+    mymana = MakeTypedPowerKeyword("mymana", "player", 0),
+    rage = MakeTypedPowerKeyword("rage", "target", 1),
+    myrage = MakeTypedPowerKeyword("myrage", "player", 1),
+    energy = MakeTypedPowerKeyword("energy", "target", 3),
+    myenergy = MakeTypedPowerKeyword("myenergy", "player", 3),
 
     rawpower = function(conditionals)
         return Multi(conditionals.rawpower, function(args)
@@ -6672,6 +6958,37 @@ CleveRoids.Keywords = {
         end, conditionals, "hp")
     end,
 
+    -- [partyhp:<30>2] — count living party members (incl. player) with HP% matching
+    -- the filter; compare that count. Syntax: filterOp+amt then countOp+amt.
+    partyhp = function(conditionals)
+        return Multi(conditionals.partyhp, function(args)
+            if type(args) ~= "table" or not args.filter then return false end
+            if not args.operator or args.amount == nil then return false end
+            if not CleveRoids.operators[args.operator] then return false end
+            local count = CleveRoids.CountPartyMembersMatching({
+                stat = "hp",
+                operator = args.filter.operator,
+                amount = args.filter.amount,
+            })
+            return CleveRoids.comparators[args.operator](count, args.amount)
+        end, conditionals, "partyhp")
+    end,
+
+    -- [partypower:<30>1] — same as partyhp but for primary power %.
+    partypower = function(conditionals)
+        return Multi(conditionals.partypower, function(args)
+            if type(args) ~= "table" or not args.filter then return false end
+            if not args.operator or args.amount == nil then return false end
+            if not CleveRoids.operators[args.operator] then return false end
+            local count = CleveRoids.CountPartyMembersMatching({
+                stat = "power",
+                operator = args.filter.operator,
+                amount = args.filter.amount,
+            })
+            return CleveRoids.comparators[args.operator](count, args.amount)
+        end, conditionals, "partypower")
+    end,
+
     level = function(conditionals)
         return Multi(conditionals.level, function(args)
             if type(args) ~= "table" then return false end
@@ -6725,6 +7042,30 @@ CleveRoids.Keywords = {
 
             return CleveRoids.ValidateLevel("player", args.operator, args.amount)
         end, conditionals, "mylevel")
+    end,
+
+    myspellhaste = function(conditionals)
+        return Multi(conditionals.myspellhaste, function(args)
+            if type(args) ~= "table" then return false end
+
+            -- Handle multi-comparison (e.g., >50&<80)
+            if args.comparisons and type(args.comparisons) == "table" then
+                local haste = CleveRoids.ClassicAPI.UnitSpellHaste("player")
+
+                -- ALL comparisons must pass (AND logic)
+                for _, comp in ipairs(args.comparisons) do
+                    if not CleveRoids.operators[comp.operator] then
+                        return false
+                    end
+                    if not CleveRoids.comparators[comp.operator](haste, comp.amount) then
+                        return false
+                    end
+                end
+                return true
+            end
+
+            return CleveRoids.ValidateSpellHaste("player", args.operator, args.amount)
+        end, conditionals, "myspellhaste")
     end,
 
     myhp = function(conditionals)
@@ -7177,6 +7518,35 @@ CleveRoids.Keywords = {
         return not CleveRoids.IsPlayerTank(name)
     end,
 
+    -- [boss] - @unit (or current target) is a boss (same rules as [type:boss])
+    -- [boss:leadertarget] / [boss:focus] - check a specific unit without changing cast @unit
+    boss = function(conditionals)
+        if not CleveRoids.IsBossUnit then return false end
+        if conditionals.boss and type(conditionals.boss) == "table" then
+            return Or(conditionals.boss, function(unit)
+                unit = ResolveFocusUnit(unit)
+                if not unit or not UnitExists(unit) then return false end
+                return CleveRoids.IsBossUnit(unit) and true or false
+            end)
+        end
+        local target = conditionals.target or "target"
+        return CleveRoids.IsBossUnit(target) and true or false
+    end,
+
+    -- [noboss] / [noboss:leadertarget]
+    noboss = function(conditionals)
+        if not CleveRoids.IsBossUnit then return true end
+        if conditionals.noboss and type(conditionals.noboss) == "table" then
+            return NegatedMulti(conditionals.noboss, function(unit)
+                unit = ResolveFocusUnit(unit)
+                if not unit or not UnitExists(unit) then return true end
+                return not CleveRoids.IsBossUnit(unit)
+            end, conditionals, "noboss")
+        end
+        local target = conditionals.target or "target"
+        return not CleveRoids.IsBossUnit(target)
+    end,
+
     -- [inrange] or [inrange:Spell] - Target is in range of spell
     -- [inrange:Spell>N] - More than N enemies are in range of spell (count mode)
     inrange = function(conditionals)
@@ -7508,28 +7878,109 @@ CleveRoids.Keywords = {
         end, conditionals, "nopet")
     end,
 
-    -- [swimming] - Player is currently swimming (Nampower v2.36+)
-    swimming = function(conditionals)
-        if not CleveRoids.NampowerAPI.features.hasPlayerIsSwimming then
-            if not CleveRoids._swimmingErrorShown then
-                DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[SuperCleveRoidMacros]|r The [swimming] conditional requires Nampower v2.36.0 or newer.", 1, 0.5, 0.5)
-                CleveRoids._swimmingErrorShown = true
-            end
+    -- Hunter pet happiness: 1=unhappy, 2=content, 3=happy.
+    pethappiness = function(conditionals)
+        local happiness = GetPetHappiness()
+        local _, isHunterPet = HasPetUI()
+        if not isHunterPet or not happiness then
             return false
         end
-        return PlayerIsSwimming() == 1
+
+        if conditionals.pethappiness == true then
+            return true
+        end
+
+        return Multi(conditionals.pethappiness, function(requiredState)
+            return happiness == ResolvePetHappinessState(requiredState)
+        end, conditionals, "pethappiness")
     end,
 
-    -- [noswimming] - Player is NOT swimming (Nampower v2.36+)
-    noswimming = function(conditionals)
-        if not CleveRoids.NampowerAPI.features.hasPlayerIsSwimming then
-            if not CleveRoids._swimmingErrorShown then
-                DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[SuperCleveRoidMacros]|r The [swimming] conditional requires Nampower v2.36.0 or newer.", 1, 0.5, 0.5)
-                CleveRoids._swimmingErrorShown = true
-            end
+    nopethappiness = function(conditionals)
+        local happiness = GetPetHappiness()
+        local _, isHunterPet = HasPetUI()
+        if not isHunterPet or not happiness then
+            return true
+        end
+
+        if conditionals.nopethappiness == true then
             return false
         end
-        return PlayerIsSwimming() ~= 1
+
+        return NegatedMulti(conditionals.nopethappiness, function(forbiddenState)
+            return happiness ~= ResolvePetHappinessState(forbiddenState)
+        end, conditionals, "nopethappiness")
+    end,
+
+    -- [focus] / [nofocus] - whether a focus is set. Covers pfUI's emulated focus
+    -- and ClassicAPI's native focus token (set via /focus or the FOCUSTARGET keybind).
+    focus = function(conditionals)
+        return CleveRoids.GetFocusUnitId() ~= nil
+    end,
+
+    nofocus = function(conditionals)
+        return CleveRoids.GetFocusUnitId() == nil
+    end,
+
+    -- [swimming] - Player is currently swimming (Nampower v2.36+)
+    swimming = function(conditionals)
+        return CleveRoids.ClassicAPI.IsSwimming()
+    end,
+
+    -- [noswimming] - Player is NOT swimming
+    noswimming = function(conditionals)
+        return not CleveRoids.ClassicAPI.IsSwimming()
+    end,
+
+    -- [indoors] - Player is under a WMO roof (building, cave, instance interior)
+    indoors = function(conditionals)
+        return CleveRoids.ClassicAPI.IsIndoors()
+    end,
+
+    -- [noindoors] - Player is NOT indoors
+    noindoors = function(conditionals)
+        return not CleveRoids.ClassicAPI.IsIndoors()
+    end,
+
+    -- [outdoors] - Player is outdoors (open sky / not inside a WMO interior)
+    outdoors = function(conditionals)
+        return CleveRoids.ClassicAPI.IsOutdoors()
+    end,
+
+    -- [nooutdoors] - Player is NOT outdoors
+    nooutdoors = function(conditionals)
+        return not CleveRoids.ClassicAPI.IsOutdoors()
+    end,
+
+    -- [instance] / [instance:party] / [instance:raid] / [instance:pvp] / [instance:party/raid]
+    -- Map.dbc instance type (IsInInstance / GetInstanceInfo). Not the same as [indoors].
+    -- Aliases: dungeon=party, battleground|bg=pvp
+    instance = function(conditionals)
+        local val = conditionals.instance
+        local itype = CleveRoids.ClassicAPI.GetInstanceType()
+        if val == true then
+            return itype ~= "none"
+        end
+        return Multi(val, function(want)
+            want = string.lower(want)
+            if want == "dungeon" then want = "party" end
+            if want == "battleground" or want == "bg" then want = "pvp" end
+            return itype == want
+        end, conditionals, "instance")
+    end,
+
+    -- [noinstance] / [noinstance:party] / [noinstance:raid] / [noinstance:pvp]
+    noinstance = function(conditionals)
+        local val = conditionals.noinstance
+        local itype = CleveRoids.ClassicAPI.GetInstanceType()
+        if val == true then
+            return itype == "none"
+        end
+        return NegatedMulti(val, function(want)
+            want = string.lower(want)
+            if want == "dungeon" then want = "party" end
+            if want == "battleground" or want == "bg" then want = "pvp" end
+            return itype ~= want
+        end, conditionals, "noinstance")
     end,
 
     -- [rooted] - Player is currently rooted (Nampower v2.36+)
@@ -7776,16 +8227,26 @@ CleveRoids.Keywords = {
     -- [meleerange] - Target is in melee range
     -- [meleerange:>N] - More than N enemies are in melee range (count mode)
     -- [meleerange:facing>N] - More than N enemies in melee range AND facing (compound count)
+    -- [meleerange:tgtplayer>N] / [meleerange:hp50>=N] - count filters; repeated counts are AND'd
     meleerange = function(conditionals)
-        local countArgs = CleveRoids.GetCountModeArgs(conditionals.meleerange)
-        if countArgs then
-            local filter = ParseCountModeFilter(countArgs.name)
-            local count = CleveRoids.CountEnemiesMatching(function(unit)
-                if not CleveRoids.IsUnitInMeleeRange(unit, true) then return false end
-                if filter and not filter(unit) then return false end
-                return true
-            end)
-            return CleveRoids.comparators[countArgs.operator](count, countArgs.amount)
+        local val = conditionals.meleerange
+        if type(val) == "table" then
+            local first = val[1]
+            if type(first) == "table" and first.operator and first.amount then
+                return Multi(val, function(args)
+                    if type(args) ~= "table" or not args.operator or args.amount == nil then
+                        return false
+                    end
+                    if not CleveRoids.operators[args.operator] then return false end
+                    local filter = ParseCountModeFilter(args.name)
+                    local count = CleveRoids.CountEnemiesMatching(function(unit)
+                        if not CleveRoids.IsUnitInMeleeRange(unit, true) then return false end
+                        if filter and not filter(unit) then return false end
+                        return true
+                    end)
+                    return CleveRoids.comparators[args.operator](count, args.amount)
+                end, conditionals, "meleerange")
+            end
         end
 
         local unit = conditionals.target or "target"
@@ -7852,17 +8313,11 @@ CleveRoids.Keywords = {
     end,
 
     onswingpending = function(conditionals)
-        if not GetCurrentCastingInfo then return false end
-
-        local _, _, _, _, _, onswing = GetCurrentCastingInfo()
-        return onswing == 1
+        return CleveRoids.IsOnSwingPending()
     end,
 
     noonswingpending = function(conditionals)
-        if not GetCurrentCastingInfo then return true end
-
-        local _, _, _, _, _, onswing = GetCurrentCastingInfo()
-        return onswing ~= 1
+        return not CleveRoids.IsOnSwingPending()
     end,
 
     mybuffcount = function(conditionals)
@@ -7902,6 +8357,24 @@ CleveRoids.Keywords = {
     noohimbue = function(conditionals)
         local args = CleveRoids.ParseImbueArgs(conditionals.noohimbue, conditionals)
         return not CleveRoids.ValidateWeaponImbue("oh", args)
+    end,
+
+    -- [mhenchant:ID] / [mhenchant:Name] - main hand has that SPECIFIC temporary
+    -- weapon enchant, matched by SpellItemEnchantment ID or localized name via
+    -- ClassicAPI (locale-proof, unlike [mhimbue:Name]'s tooltip scan). Bare
+    -- [mhenchant] = any temp enchant; [mhenchant:A/B] = either; [nomhenchant:X]
+    -- = not that enchant. Names use _ for spaces, e.g. [mhenchant:Deadly_Poison].
+    mhenchant = function(conditionals)
+        return CleveRoids.ValidateWeaponEnchant("mh", conditionals.mhenchant)
+    end,
+    nomhenchant = function(conditionals)
+        return not CleveRoids.ValidateWeaponEnchant("mh", conditionals.nomhenchant)
+    end,
+    ohenchant = function(conditionals)
+        return CleveRoids.ValidateWeaponEnchant("oh", conditionals.ohenchant)
+    end,
+    noohenchant = function(conditionals)
+        return not CleveRoids.ValidateWeaponEnchant("oh", conditionals.noohenchant)
     end,
 
     immune = function(conditionals)
@@ -8547,6 +9020,7 @@ CleveRoids.Keywords = {
     -- [norangedclip] - True if casting the action spell NOW will NOT clip ranged auto-shot
     -- Usage: /cast [norangedclip] Aimed Shot
     --        /cast [norangedclip] Fireball
+    --        /cast [norangedclip] Arcane Shot  -- instants: blocked during Quiver windup
     norangedclip = function(conditionals)
         return CleveRoids.ValidateNoRangedClip(conditionals)
     end,
@@ -8557,13 +9031,21 @@ CleveRoids.Keywords = {
         return not CleveRoids.ValidateNoRangedClip(conditionals)
     end,
 
+    -- [midshot] / [nomidshot] — Quiver PredMidShot (auto-shot windup). Requires Quiver.
+    midshot = function()
+        return CleveRoids.ValidateMidShot()
+    end,
+    nomidshot = function()
+        return not CleveRoids.ValidateMidShot()
+    end,
+
     -- Checks if the target uses a specific power type (mana, rage, energy)
     powertype = function(conditionals)
         local unit = conditionals.target or "target"
         if not UnitExists(unit) then return false end
 
         return Or(conditionals.powertype, function(powerTypeName)
-            local powerType = UnitPowerType(unit)
+            local powerType = CleveRoids.ClassicAPI.UnitPowerType(unit)
             local powerTypeLower = string.lower(powerTypeName or "")
 
             if powerTypeLower == "mana" then
@@ -8586,7 +9068,7 @@ CleveRoids.Keywords = {
         if not UnitExists(unit) then return true end
 
         return NegatedMulti(conditionals.nopowertype, function(powerTypeName)
-            local powerType = UnitPowerType(unit)
+            local powerType = CleveRoids.ClassicAPI.UnitPowerType(unit)
             local powerTypeLower = string.lower(powerTypeName or "")
 
             if powerTypeLower == "mana" then
@@ -8671,6 +9153,33 @@ CleveRoids.Keywords = {
         end, conditionals, "nomycc")
     end,
 
+    -- [locked] / [locked:school] - player is under a spell-school interrupt
+    -- lockout (Counterspell/Kick/Pummel/Earth Shock), via ClassicAPI
+    -- C_LossOfControl -- the server lockout no debuff scan can see. Bare = any
+    -- school kicked; [locked:frost] = that school; [locked:fire/frost] = either.
+    -- Full silences are separate ([mycc:silence]). Player-only.
+    locked = function(conditionals)
+        local v = conditionals.locked
+        if v == nil or v == true or (type(v) == "table" and table.getn(v) == 0) then
+            return CleveRoids.ValidateSchoolLocked(nil)
+        end
+        return Or(v, function(school)
+            return CleveRoids.ValidateSchoolLocked(school)
+        end)
+    end,
+
+    -- [nolocked:school] - player is NOT school-locked. AND logic on negation:
+    -- [nolocked:fire/frost] = neither Fire nor Frost is kicked.
+    nolocked = function(conditionals)
+        local v = conditionals.nolocked
+        if v == nil or v == true or (type(v) == "table" and table.getn(v) == 0) then
+            return not CleveRoids.ValidateSchoolLocked(nil)
+        end
+        return NegatedMulti(v, function(school)
+            return not CleveRoids.ValidateSchoolLocked(school)
+        end, conditionals, "nolocked")
+    end,
+
     -- ========================================================================
     -- RESIST TRACKING CONDITIONALS
     -- ========================================================================
@@ -8708,6 +9217,79 @@ CleveRoids.Keywords = {
         return NegatedMulti(conditionals.noresisted, function(resistType)
             return not CleveRoids.CheckResistState(resistType)
         end, conditionals, "noresisted")
+    end,
+
+    -- [npcnear:Name/Name2] - Living unit with exact name within 20y (target dummies etc.)
+    -- Uses UnitTokenFromName/TargetByName; does not rely on UnitXP combat targeting.
+    npcnear = function(conditionals)
+        return Multi(conditionals.npcnear, function(v)
+            local nameStr = nil
+            local maxDist = 20
+            if type(v) == "table" and v.name and v.operator and v.amount then
+                nameStr = string.gsub(tostring(v.name), ":%s*$", "")
+                if v.operator == "<" or v.operator == "<=" then
+                    maxDist = v.amount
+                end
+            elseif type(v) == "string" then
+                local _, _, n, d = string.find(v, "^(.+):<(%d+)$")
+                if n and d then
+                    nameStr = n
+                    maxDist = tonumber(d)
+                else
+                    nameStr = v
+                end
+            end
+            if not nameStr or nameStr == "" then return false end
+            local nameSet = {}
+            nameSet[string.lower(CleveRoids.NormalizeName(nameStr))] = true
+            return CleveRoids.HasNearbyNamedEnemy(nameSet, maxDist)
+        end, conditionals, "npcnear")
+    end,
+
+    -- [creaturenear:12426/2674/2673] - Visible creature by template ID within 20y
+    -- [creaturenear:12426:<15] - custom yards. Uses ClassicAPI ClosestUnitPosition.
+    -- Preferred for target dummies (entry scan, no name/combat/frustum issues).
+    creaturenear = function(conditionals)
+        return Multi(conditionals.creaturenear, function(v)
+            local entry = nil
+            local maxDist = 20
+            if type(v) == "table" and v.name and v.operator and v.amount then
+                entry = tonumber(v.name) or tonumber(string.gsub(tostring(v.name), ":%s*$", ""))
+                if v.operator == "<" or v.operator == "<=" then
+                    maxDist = v.amount
+                end
+            elseif type(v) == "string" or type(v) == "number" then
+                local s = tostring(v)
+                local _, _, id, d = string.find(s, "^(%d+):<(%d+)$")
+                if id and d then
+                    entry = tonumber(id)
+                    maxDist = tonumber(d)
+                else
+                    entry = tonumber(s)
+                end
+            end
+            if not entry then return false end
+            local entrySet = {}
+            entrySet[entry] = true
+            return CleveRoids.HasNearbyCreatureEntry(entrySet, maxDist)
+        end, conditionals, "creaturenear")
+    end,
+
+    -- [mydummy] / [nomydummy] — PartyFollow dummy token (IsMyDummy).
+    -- Bare conditionals: true when this client holds the place-dummy token.
+    mydummy = function()
+        if type(IsMyDummy) == "function" then
+            return IsMyDummy() and true or false
+        end
+        return false
+    end,
+
+    nomydummy = function()
+        if type(IsMyDummy) == "function" then
+            return not IsMyDummy()
+        end
+        -- PartyFollow not loaded: fail closed (do not place)
+        return true
     end,
 
     -- ========================================================================
@@ -8917,12 +9499,11 @@ CleveRoids.Keywords = {
     end,
 
     -- =========================================================================
-    -- MOVEMENT SPEED CONDITIONALS (MonkeySpeed integration)
+    -- MOVEMENT SPEED CONDITIONALS (ClassicAPI GetUnitSpeed)
     -- =========================================================================
-    -- [moving] - Player is moving (speed > 0)
+    -- [moving] - Player is moving (speed > 0, or jumping/falling)
     -- [moving:>100] - Player speed is above 100% (faster than normal run)
     -- [moving:<50] - Player speed is below 50% (slower than half speed)
-    -- Requires MonkeySpeed addon for speed comparisons (basic moving check uses fallback)
     moving = function(conditionals)
         -- Boolean form [moving] - just check if moving at all
         if conditionals.moving == true then
@@ -8936,10 +9517,6 @@ CleveRoids.Keywords = {
             -- Handle multi-comparison (e.g., >50&<150)
             if args.comparisons and type(args.comparisons) == "table" then
                 local speed = CleveRoids.GetPlayerSpeed()
-                if speed == nil then
-                    CleveRoids.RequireMonkeySpeed("moving speed comparison")
-                    return false
-                end
 
                 -- ALL comparisons must pass (AND logic)
                 for _, comp in ipairs(args.comparisons) do
@@ -8971,10 +9548,6 @@ CleveRoids.Keywords = {
 
             if args.comparisons and type(args.comparisons) == "table" then
                 local speed = CleveRoids.GetPlayerSpeed()
-                if speed == nil then
-                    -- If MonkeySpeed not available, negated returns true (fail-safe)
-                    return true
-                end
 
                 for _, comp in ipairs(args.comparisons) do
                     if not CleveRoids.operators[comp.operator] then
@@ -8995,6 +9568,20 @@ CleveRoids.Keywords = {
     -- ALIASES — short forms for commonly-used conditionals to save macro chars
     -- =========================================================================
 
+    -- [lastcast:Spell>60] / [lastcast:>60] — seconds since last successful cast of Spell
+    -- (or of the action spell when name omitted). Never cast counts as infinite elapsed.
+    -- Examples: [lastcast:>60] 灵魂链接   [lastcast:灵魂链接>60]   [lastcast:spell:45500>60]
+    lastcast = function(conditionals)
+        return Multi(conditionals.lastcast, function(v)
+            return CleveRoids.ValidateLastCast(v)
+        end, conditionals, "lastcast")
+    end,
+    nolastcast = function(conditionals)
+        return NegatedMulti(conditionals.nolastcast, function(v)
+            return not CleveRoids.ValidateLastCast(v)
+        end, conditionals, "nolastcast")
+    end,
+
     -- cd / nocd → cooldown / nocooldown (saves 6/8 chars)
     cd = function(conditionals)
         return Multi(conditionals.cd, function(v)
@@ -9005,6 +9592,18 @@ CleveRoids.Keywords = {
         return NegatedMulti(conditionals.nocd, function(v)
             return not CleveRoids.ValidateCooldown(v, true)
         end, conditionals, "nocd")
+    end,
+
+    -- lc / nolc → lastcast / nolastcast
+    lc = function(conditionals)
+        return Multi(conditionals.lc, function(v)
+            return CleveRoids.ValidateLastCast(v)
+        end, conditionals, "lc")
+    end,
+    nolc = function(conditionals)
+        return NegatedMulti(conditionals.nolc, function(v)
+            return not CleveRoids.ValidateLastCast(v)
+        end, conditionals, "nolc")
     end,
 
     -- react / noreact → reactive / noreactive (saves 3/5 chars)
@@ -9112,16 +9711,26 @@ CleveRoids.Keywords = {
     end,
 
     -- melee / nomelee → meleerange / nomeleerange (saves 5/7 chars)
+    -- Same count-mode filters as meleerange (facing/behind/tgtplayer/hp50)
     melee = function(conditionals)
-        local countArgs = CleveRoids.GetCountModeArgs(conditionals.melee)
-        if countArgs then
-            local filter = ParseCountModeFilter(countArgs.name)
-            local count = CleveRoids.CountEnemiesMatching(function(unit)
-                if not CleveRoids.IsUnitInMeleeRange(unit, true) then return false end
-                if filter and not filter(unit) then return false end
-                return true
-            end)
-            return CleveRoids.comparators[countArgs.operator](count, countArgs.amount)
+        local val = conditionals.melee
+        if type(val) == "table" then
+            local first = val[1]
+            if type(first) == "table" and first.operator and first.amount then
+                return Multi(val, function(args)
+                    if type(args) ~= "table" or not args.operator or args.amount == nil then
+                        return false
+                    end
+                    if not CleveRoids.operators[args.operator] then return false end
+                    local filter = ParseCountModeFilter(args.name)
+                    local count = CleveRoids.CountEnemiesMatching(function(unit)
+                        if not CleveRoids.IsUnitInMeleeRange(unit, true) then return false end
+                        if filter and not filter(unit) then return false end
+                        return true
+                    end)
+                    return CleveRoids.comparators[args.operator](count, args.amount)
+                end, conditionals, "melee")
+            end
         end
         local unit = conditionals.target or "target"
         if not UnitExists(unit) then return false end
@@ -9152,7 +9761,6 @@ CleveRoids.Keywords = {
             if type(args) ~= "table" then return false end
             if args.comparisons and type(args.comparisons) == "table" then
                 local speed = CleveRoids.GetPlayerSpeed()
-                if speed == nil then return false end
                 for _, comp in ipairs(args.comparisons) do
                     if not CleveRoids.operators[comp.operator] then return false end
                     if not CleveRoids.comparators[comp.operator](speed, comp.amount) then return false end
@@ -9170,7 +9778,6 @@ CleveRoids.Keywords = {
             if type(args) ~= "table" then return false end
             if args.comparisons and type(args.comparisons) == "table" then
                 local speed = CleveRoids.GetPlayerSpeed()
-                if speed == nil then return true end
                 for _, comp in ipairs(args.comparisons) do
                     if not CleveRoids.operators[comp.operator] then return true end
                     if not CleveRoids.comparators[comp.operator](speed, comp.amount) then return true end
@@ -9344,36 +9951,19 @@ CleveRoids.Keywords = {
 
     -- swim / noswim → swimming / noswimming (saves 4/6 chars)
     swim = function(conditionals)
-        if not CleveRoids.NampowerAPI.features.hasPlayerIsSwimming then
-            if not CleveRoids._swimmingErrorShown then
-                DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[SuperCleveRoidMacros]|r The [swimming] conditional requires Nampower v2.36.0 or newer.", 1, 0.5, 0.5)
-                CleveRoids._swimmingErrorShown = true
-            end
-            return false
-        end
-        return PlayerIsSwimming() == 1
+        return CleveRoids.ClassicAPI.IsSwimming()
     end,
     noswim = function(conditionals)
-        if not CleveRoids.NampowerAPI.features.hasPlayerIsSwimming then
-            if not CleveRoids._swimmingErrorShown then
-                DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[SuperCleveRoidMacros]|r The [swimming] conditional requires Nampower v2.36.0 or newer.", 1, 0.5, 0.5)
-                CleveRoids._swimmingErrorShown = true
-            end
-            return false
-        end
-        return PlayerIsSwimming() ~= 1
+        return not CleveRoids.ClassicAPI.IsSwimming()
     end,
 
     -- osp / noosp → onswingpending / noonswingpending (saves 11/13 chars)
+    -- Uses action-bar IsCurrentAction (see CleveRoids.IsOnSwingPending).
     osp = function(conditionals)
-        if not GetCurrentCastingInfo then return false end
-        local _, _, _, _, _, onswing = GetCurrentCastingInfo()
-        return onswing == 1
+        return CleveRoids.IsOnSwingPending()
     end,
     noosp = function(conditionals)
-        if not GetCurrentCastingInfo then return true end
-        local _, _, _, _, _, onswing = GetCurrentCastingInfo()
-        return onswing ~= 1
+        return not CleveRoids.IsOnSwingPending()
     end,
 
     -- ihit / noihit → incominghit / noincominghit (saves 7/9 chars)
@@ -9432,16 +10022,10 @@ CleveRoids.Keywords = {
 
     -- stl / nostl → stealth / nostealth (saves 4/6 chars)
     stl = function(conditionals)
-        return (
-            (CleveRoids.playerClass == "ROGUE" and CleveRoids.ValidatePlayerBuff(CleveRoids.Localized.Spells["Stealth"]))
-            or (CleveRoids.playerClass == "DRUID" and CleveRoids.ValidatePlayerBuff(CleveRoids.Localized.Spells["Prowl"]))
-        )
+        return CleveRoids.ClassicAPI.IsStealthed()
     end,
     nostl = function(conditionals)
-        return (
-            (CleveRoids.playerClass == "ROGUE" and not CleveRoids.ValidatePlayerBuff(CleveRoids.Localized.Spells["Stealth"]))
-            or (CleveRoids.playerClass == "DRUID" and not CleveRoids.ValidatePlayerBuff(CleveRoids.Localized.Spells["Prowl"]))
-        )
+        return not CleveRoids.ClassicAPI.IsStealthed()
     end,
 
     -- ic / ooc → combat / nocombat (saves 4/5 chars)
@@ -9529,15 +10113,27 @@ CleveRoids.STATIC_CONDITIONALS = {
     combat = true, nocombat = true, ic = true, ooc = true,
     zone = true, nozone = true,
     stealth = true, nostealth = true, stl = true, nostl = true,
+    mounted = true, nomounted = true, standing = true, sitting = true,
     form = true, noform = true, stance = true, nostance = true,
     equipped = true, noequipped = true, eq = true, noeq = true,
     set = true, noset = true,
     inbag = true, noinbag = true,
     mod = true, nomod = true,
     keydown = true, nokeydown = true,
+    button = true, nobutton = true,
+    totem = true, nototem = true,
+    totemdistance = true, nototemdistance = true,
     swimming = true, noswimming = true, swim = true, noswim = true,
+    indoors = true, noindoors = true, outdoors = true, nooutdoors = true,
+    instance = true, noinstance = true,
     rooted = true, norooted = true,
     resting = true, noresting = true,
+    partyhp = true, partypower = true,  -- party-wide count; independent of @unit / multiscan candidate
+    npcnear = true,  -- world NPC name scan; independent of current @unit
+    creaturenear = true,  -- ClassicAPI ClosestUnitPosition by entry
+    mydummy = true, nomydummy = true,  -- PartyFollow dummy token (IsMyDummy)
+    midshot = true, nomidshot = true,  -- Quiver PredMidShot (hunter auto-shot windup)
+    norangedclip = true, rangedclip = true,  -- SP_SwingTimer + Quiver weave gate
 }
 
 --- Calculate score for a unit based on priority type

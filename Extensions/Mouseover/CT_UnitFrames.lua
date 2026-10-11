@@ -6,7 +6,6 @@ local _G = _G or getfenv(0)
 local CleveRoids = _G.CleveRoids or {}
 
 local Extension = CleveRoids.RegisterExtension("CT_UnitFrames")
-Extension.RegisterEvent("ADDON_LOADED", "OnLoad")
 
 function Extension.SetHook(widget)
     local hookedOnEnter = widget:GetScript("OnEnter")
@@ -24,8 +23,10 @@ function Extension.SetHook(widget)
     end)
 end
 
-function Extension.OnLoad()
-    if arg1 ~= "CT_UnitFrames" or not CT_AssistFrame then
+function Extension.OnLoad() end
+
+function Extension.OnAddOnLoad()
+    if not CT_AssistFrame then
         return
     end
     CleveRoids.Print("CT_UnitFrames module loaded.")
@@ -36,4 +37,4 @@ function Extension.OnLoad()
     Extension.SetHook(CT_AssistFrame_Drag)
 end
 
-_G["CleveRoids"] = CleveRoids
+EventUtil.ContinueOnAddOnLoaded("CT_UnitFrames", Extension.OnAddOnLoad)

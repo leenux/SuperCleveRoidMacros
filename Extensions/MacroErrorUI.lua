@@ -697,30 +697,9 @@ local function EnsureCondHighlightPool()
     end
 end
 
--- Test whether conditionals pass for a given command + alternative text.
--- Returns: true (passes), false (fails), nil (unconditional / no conditionals)
-local function TestConditionalPasses(cmd, alternative)
-    -- Strip ? tooltip hints (irrelevant for conditional evaluation)
-    if string.find(alternative, "?", 1, true) then
-        alternative = string.gsub(alternative, "%?", "")
-    end
-
-    local hasConditional = string.find(alternative, "%[") ~= nil
-
-    -- Dynamic commands: delegate to TestAction
-    if CleveRoids.dynamicCmds[cmd] then
-        local result = CleveRoids.TestAction(cmd, alternative)
-        if not hasConditional then
-            return nil  -- unconditional
-        end
-        return result ~= nil and result ~= false
-    end
-
-    -- Non-dynamic commands: parse and evaluate Keywords manually
-    if not hasConditional then
-        return nil  -- unconditional
-    end
-
+-- Evaluate one single-group clause of a non-dynamic command against Keywords.
+-- Returns: true (passes), false (fails), nil (could not parse)
+local function EvaluateNonDynamic(alternative)
     local ok, action, conditionals = pcall(CleveRoids.GetParsedMsg, alternative)
     if not ok or not conditionals then
         return nil
@@ -743,6 +722,43 @@ local function TestConditionalPasses(cmd, alternative)
 
     CleveRoids._isTestingAction = false
     return passes
+end
+
+-- Test whether conditionals pass for a given command + alternative text.
+-- Returns: true (passes), false (fails), nil (unconditional / no conditionals)
+local function TestConditionalPasses(cmd, alternative)
+    -- Strip ? tooltip hints (irrelevant for conditional evaluation)
+    if string.find(alternative, "?", 1, true) then
+        alternative = string.gsub(alternative, "%?", "")
+    end
+
+    local hasConditional = string.find(alternative, "%[") ~= nil
+
+    -- Dynamic commands: delegate to TestAction
+    if CleveRoids.dynamicCmds[cmd] then
+        local result = CleveRoids.TestAction(cmd, alternative)
+        if not hasConditional then
+            return nil  -- unconditional
+        end
+        return result ~= nil and result ~= false
+    end
+
+    -- Non-dynamic commands: evaluate Keywords manually. `[a][b] X` passes when
+    -- any of its groups does.
+    if not hasConditional then
+        return nil  -- unconditional
+    end
+
+    local variants = CleveRoids.ExpandBracketGroups(alternative)
+    if not variants then
+        return EvaluateNonDynamic(alternative)
+    end
+    for i = 1, variants.n do
+        if EvaluateNonDynamic(variants[i]) then
+            return true
+        end
+    end
+    return false
 end
 
 -- Find character offset ranges for each semicolon-separated alternative.
@@ -1072,100 +1088,12 @@ end
 -- Validation & Debounce
 -- ============================================================================
 
--- Build a set of player spell names (lowercase) for name conflict checks
-local function GetPlayerSpellNames()
-    local spellNames = {}
-    -- Primary source: CleveRoids.Spells indexed table
-    if CleveRoids.Spells then
-        for bookType, spells in CleveRoids.Spells do
-            if type(spells) == "table" then
-                for spellName, _ in pairs(spells) do
-                    if type(spellName) == "string" then
-                        spellNames[string.lower(spellName)] = true
-                    end
-                end
-            end
-        end
-    end
-    -- Fallback: iterate spellbook directly
-    if not next(spellNames) then
-        local i = 1
-        while true do
-            local name, rank = GetSpellName(i, "spell")
-            if not name then break end
-            spellNames[string.lower(name)] = true
-            i = i + 1
-        end
-    end
-    return spellNames
-end
-
--- Build a set of player item names (lowercase) for name conflict checks
-local function GetPlayerItemNames()
-    local itemNames = {}
-    if CleveRoids.Items then
-        for key, value in pairs(CleveRoids.Items) do
-            if type(key) == "string" and type(value) == "table" and value.name then
-                itemNames[string.lower(value.name)] = true
-            end
-        end
-    end
-    return itemNames
-end
-
--- Validate the current macro's name and return any name errors
+-- Macro names are no longer restricted: action-bar macros are identified by
+-- slot/index (ClassicAPI GetActionInfo), so blank, duplicate, and spell/item-name
+-- macros are all valid. (Name-based references like {MacroName}/runmacro still
+-- need a unique name, but that's not enforced here.)
 local function ValidateMacroName()
-    local nameErrors = {}
-    if not MacroFrame or not MacroFrame.selectedMacro then return nameErrors end
-
-    local selectedSlot = MacroFrame.selectedMacro
-    local nameOk, name = pcall(GetMacroInfo, selectedSlot)
-    if not nameOk or not name then return nameErrors end
-
-    -- Blank/whitespace name
-    local trimmedName = CleveRoids.Trim and CleveRoids.Trim(name) or name
-    if trimmedName == "" then
-        table.insert(nameErrors, {
-            type = "NAME_ERROR",
-            message = "Macro name is blank or only spaces"
-        })
-    end
-
-    -- Spell conflict
-    local lowerName = string.lower(name)
-    local spellNames = GetPlayerSpellNames()
-    if spellNames[lowerName] then
-        table.insert(nameErrors, {
-            type = "NAME_ERROR",
-            message = "Name '" .. name .. "' conflicts with a spell/ability"
-        })
-    end
-
-    -- Item conflict
-    local itemNames = GetPlayerItemNames()
-    if itemNames[lowerName] then
-        table.insert(nameErrors, {
-            type = "NAME_ERROR",
-            message = "Name '" .. name .. "' conflicts with an item"
-        })
-    end
-
-    -- Duplicate name check
-    local dupeCount = 0
-    for i = 1, 36 do
-        local ok, otherName = pcall(GetMacroInfo, i)
-        if ok and otherName and string.lower(otherName) == lowerName then
-            dupeCount = dupeCount + 1
-        end
-    end
-    if dupeCount > 1 then
-        table.insert(nameErrors, {
-            type = "NAME_ERROR",
-            message = "Duplicate name '" .. name .. "' (used " .. dupeCount .. " times)"
-        })
-    end
-
-    return nameErrors
+    return {}
 end
 
 local function RunValidation()
@@ -1249,13 +1177,10 @@ end
 local function ReportAllMacroErrors()
     local accountEntries = {} -- { {name=, slot=, errors=}, ... }
     local characterEntries = {}
-    local nameCount = {} -- lowercase name -> count (for duplicate detection)
-    local nameSlots = {} -- lowercase name -> { slot1, slot2, ... }
-    local spellNames = GetPlayerSpellNames()
-    local itemNames = GetPlayerItemNames()
 
-    -- First pass: collect all macro names and body errors
-    for i = 1, 36 do
+    -- Collect body (syntax) errors per macro. Macro names are no longer
+    -- restricted (slot/index-based identification), so no name checks here.
+    for i = 1, CleveRoids.MAX_MACRO_SLOTS do
         local nameOk, name = pcall(GetMacroInfo, i)
         if nameOk and name and name ~= "" then
             local errors = {}
@@ -1271,63 +1196,11 @@ local function ReportAllMacroErrors()
                 end
             end
 
-            -- Check blank/whitespace name
-            local trimmedName = CleveRoids.Trim and CleveRoids.Trim(name) or name
-            if trimmedName == "" then
-                table.insert(errors, {
-                    type = "NAME_ERROR",
-                    message = "Macro name is blank or only spaces"
-                })
-            end
-
-            -- Check if name matches a player spell
-            local lowerNameCheck = string.lower(name)
-            if spellNames[lowerNameCheck] then
-                table.insert(errors, {
-                    type = "NAME_ERROR",
-                    message = "Name '" .. name .. "' conflicts with a known spell/ability"
-                })
-            end
-
-            -- Check if name matches a player item
-            if itemNames[lowerNameCheck] then
-                table.insert(errors, {
-                    type = "NAME_ERROR",
-                    message = "Name '" .. name .. "' conflicts with an inventory item"
-                })
-            end
-
-            -- Track name for duplicate detection
-            local lowerName = string.lower(name)
-            nameCount[lowerName] = (nameCount[lowerName] or 0) + 1
-            if not nameSlots[lowerName] then nameSlots[lowerName] = {} end
-            table.insert(nameSlots[lowerName], i)
-
             local entry = { name = name, slot = i, errors = errors }
             if i <= 18 then
                 table.insert(accountEntries, entry)
             else
                 table.insert(characterEntries, entry)
-            end
-        end
-    end
-
-    -- Second pass: inject duplicate name errors
-    for lowerName, count in pairs(nameCount) do
-        if count > 1 then
-            local slots = nameSlots[lowerName]
-            for _, slot in ipairs(slots) do
-                -- Find the entry for this slot and add the error
-                local list = slot <= 18 and accountEntries or characterEntries
-                for _, entry in ipairs(list) do
-                    if entry.slot == slot then
-                        table.insert(entry.errors, 1, {
-                            type = "NAME_ERROR",
-                            message = "Duplicate name '" .. entry.name .. "' (used " .. count .. " times)"
-                        })
-                        break
-                    end
-                end
             end
         end
     end
@@ -1417,6 +1290,56 @@ end
 -- Hook Installation
 -- ============================================================================
 
+-- ============================================================================
+-- Dynamic macro-list icons
+-- Blizzard shows the default question-mark icon for macros with no chosen icon
+-- (e.g. "#showtooltip Shoot"). Replace it with the icon the action bar would
+-- show -- resolved from the macro's #showtooltip/first action -- but ONLY when
+-- the saved icon is the question mark, so user-chosen icons are never touched.
+-- Purely cosmetic: Blizzard repaints from GetMacroInfo on the next update, so
+-- if resolution fails or the macro changes, the default simply returns.
+-- ============================================================================
+
+local QUESTION_MARK = string.lower(CleveRoids.unknownTexture or "Interface\\Icons\\INV_Misc_QuestionMark")
+
+local function IsQuestionMark(iconTexture)
+    local tex = iconTexture and iconTexture:GetTexture()
+    return type(tex) == "string" and string.lower(tex) == QUESTION_MARK
+end
+
+-- Resolved tooltip texture for a Blizzard macro index, or nil when it resolves
+-- to nothing better than the question mark (no #showtooltip, unresolved spell).
+local function ResolveMacroIcon(macroIndex)
+    if not macroIndex or macroIndex < 1 then return nil end
+    local ok, macro = pcall(CleveRoids.GetMacroByIndex, macroIndex)
+    if not ok or not macro or not macro.actions or not macro.actions.tooltip then return nil end
+    local tex = macro.actions.tooltip.texture
+    if type(tex) == "string" and string.lower(tex) ~= QUESTION_MARK then
+        return tex
+    end
+    return nil
+end
+
+local function FixMacroListIcons()
+    if not MacroFrame or not MacroFrame:IsVisible() then return end
+
+    local base = MacroFrame.macroBase or 0
+    for i = 1, (MAX_MACROS or 18) do
+        local icon = getglobal("MacroButton" .. i .. "Icon")
+        if icon and IsQuestionMark(icon) then
+            local tex = ResolveMacroIcon(base + i)
+            if tex then icon:SetTexture(tex) end
+        end
+    end
+
+    -- Large icon for the currently-selected macro (details pane).
+    if MacroFrame.selectedMacro and MacroFrameSelectedMacroButtonIcon
+        and IsQuestionMark(MacroFrameSelectedMacroButtonIcon) then
+        local tex = ResolveMacroIcon(MacroFrame.selectedMacro)
+        if tex then MacroFrameSelectedMacroButtonIcon:SetTexture(tex) end
+    end
+end
+
 local function InstallHooks()
     if hooked then return end
     if not MacroFrameText or not MacroFrame then return end
@@ -1468,18 +1391,21 @@ local function InstallHooks()
         end
     end)
 
+    -- After every Blizzard macro-list refresh, swap question-mark icons for the
+    -- dynamically-resolved ones. Post-hook so Blizzard has already set the
+    -- default texture we test against.
+    if hooksecurefunc and type(MacroFrame_Update) == "function" then
+        hooksecurefunc("MacroFrame_Update", function()
+            pcall(FixMacroListIcons)
+        end)
+    end
+
     hooked = true
 end
 
 -- ============================================================================
 -- Extension Entry Points
 -- ============================================================================
-
-function Extension.OnAddonLoaded()
-    if arg1 == "Blizzard_MacroUI" then
-        InstallHooks()
-    end
-end
 
 function Extension.OnLoad()
     -- Skip if macro checker is disabled
@@ -1488,13 +1414,9 @@ function Extension.OnLoad()
     -- Skip if SuperMacro is loaded (detected at load time)
     if SuperMacroFrame ~= nil then return end
 
-    -- Listen for macro UI loading
-    Extension.RegisterEvent("ADDON_LOADED", "OnAddonLoaded")
-
-    -- If MacroFrame already exists (unlikely but safe), hook immediately
-    if MacroFrame and MacroFrameText then
-        InstallHooks()
-    end
+    -- Install once Blizzard's macro UI is available (fires immediately if already
+    -- loaded), replacing the ADDON_LOADED listener + manual "already loaded" check.
+    EventUtil.ContinueOnAddOnLoaded("Blizzard_MacroUI", InstallHooks)
 end
 
 _G["CleveRoids"] = CleveRoids
