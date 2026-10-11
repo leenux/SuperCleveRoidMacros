@@ -68,7 +68,16 @@ SKIP_NAME_SUBSTR = (
 
 SKIP_NAMES = {
     "vault armory equipment",
+    # Chess / generic labels (Upper Kara Medivh chess, etc.)
+    "king",
+    "queen",
+    "rook",
+    "bishop",
+    "knight",
 }
+
+# Atlas pin colors that mark bosses (Naxx uses ORNG/PURP/_RED/GREN wings)
+ATLAS_COLORS = ("GREY", "GREN", "ORNG", "PURP", "_RED", "BLUE")
 
 EXTRA_BOSSES = {
     12259: ("Gehennas", "extra@MoltenCore"),
@@ -172,19 +181,29 @@ def parse_atlas(maps_path: Path, locale: dict[str, str]):
             continue
         if not current or current in SKIP_MAPS:
             continue
-        if "GREY" not in line and "GREN" not in line:
+        color_ok = any(f"{c}.." in line for c in ATLAS_COLORS)
+        if not color_ok:
             continue
         if re.search(r",\s*(ITEM|OBJECT|FACTION|QUEST|ZONE)\s*,", line):
             continue
 
-        numbered = bool(re.search(r'(?:GREY|GREN)\.\."\d+\)', line))
+        # "1) Boss" under GREY/ORNG/PURP/_RED/GREN/BLUE, with optional INDENT.
+        numbered = bool(
+            re.search(
+                r'(?:GREY|GREN|ORNG|PURP|_RED|BLUE)\.\.(?:INDENT\.\.)*"\d+\)',
+                line,
+            )
+        )
         is_rare = 'AL["Rare"]' in line
         is_indent = "INDENT" in line
         has_npc = "NPC," in line
 
         if numbered:
             keep = True
-        elif has_npc and (is_indent or is_rare or "GREN" in line):
+        elif has_npc and (is_indent or is_rare or "GREN" in line or "ORNG" in line or "PURP" in line or "_RED" in line):
+            keep = True
+        elif is_indent and current not in maps_with_npc_ids:
+            # e.g. TimbermawHold Peroth'arn — indent pin, no NPC id on the whole map
             keep = True
         else:
             keep = False
@@ -192,24 +211,35 @@ def parse_atlas(maps_path: Path, locale: dict[str, str]):
             continue
 
         npc_ids = [int(x) for x in re.findall(r"NPC,\s*(-?\d+)", line)]
-        name = extract_display_name(line, locale)
-        if not name:
+        raw_name = extract_display_name(line, locale)
+        if not raw_name:
             continue
-        al_key = extract_al_key(line) or name
+        al_key = extract_al_key(line) or raw_name
+
+        # "Basalthar & Smoldaris" / "A and B" → resolve each half
+        display_names = split_combo_name(raw_name)
 
         if npc_ids:
             for nid in npc_ids:
                 if nid <= 0:
-                    name_only[name.lower()] = f"atlas@{current}:name"
-                    en_keys[name.lower()] = al_key
+                    for name in display_names:
+                        if name.lower() in SKIP_NAMES:
+                            continue
+                        name_only[name.lower()] = f"atlas@{current}:name"
+                        en_keys[name.lower()] = al_key if len(display_names) == 1 else name
                     continue
                 if nid in SKIP_NPC_IDS:
                     continue
-                bosses[nid] = (name, f"atlas@{current}")
-                en_keys[name.lower()] = al_key
-        elif numbered and current not in maps_with_npc_ids:
-            name_only[name.lower()] = f"atlas@{current}:name"
-            en_keys[name.lower()] = al_key
+                # Single-ID pin: use primary display name
+                bosses[nid] = (display_names[0], f"atlas@{current}")
+                en_keys[display_names[0].lower()] = al_key
+        else:
+            # Name-only pins (TMH / Stormwrought / UpperKara NPC,-1 already handled above)
+            for name in display_names:
+                if name.lower() in SKIP_NAMES:
+                    continue
+                name_only[name.lower()] = f"atlas@{current}:name"
+                en_keys[name.lower()] = al_key if len(display_names) == 1 else name
 
     bosses.update(EXTRA_BOSSES)
     for entry, (name, _reason) in EXTRA_BOSSES.items():
@@ -217,8 +247,43 @@ def parse_atlas(maps_path: Path, locale: dict[str, str]):
     return bosses, name_only, en_keys
 
 
+def split_combo_name(name: str) -> list[str]:
+    """Split Atlas combo labels into individual creature names."""
+    parts = re.split(r"\s*(?:&| and )\s*", name, flags=re.I)
+    out = [p.strip() for p in parts if p and p.strip()]
+    return out or [name]
+
+
+def _normalize_en_name(name: str) -> list[str]:
+    """Apostrophe / punctuation variants for DB lookup."""
+    n = name.strip()
+    variants = {n, n.lower()}
+    # curly vs straight apostrophe
+    variants.add(n.replace("'", "'").replace("'", "'"))
+    variants.add(n.replace("'", "'"))
+    variants.add(n.replace("'", "'"))
+    # strip possessive noise
+    variants.add(re.sub(r"[^\w\s'\-]", "", n))
+    return [v for v in variants if v]
+
+
+def _pick_creature_row(rows: list[tuple]) -> tuple | None:
+    """Prefer rank=3 (boss), else rank>=1, else unique row. Tie-break: lowest entry."""
+    if not rows:
+        return None
+    if len(rows) == 1:
+        return rows[0]
+    rank3 = [r for r in rows if int(r[3] or 0) == 3]
+    if rank3:
+        return sorted(rank3, key=lambda r: int(r[0]))[0]
+    elite = [r for r in rows if int(r[3] or 0) >= 1]
+    if elite:
+        return sorted(elite, key=lambda r: int(r[0]))[0]
+    return sorted(rows, key=lambda r: int(r[0]))[0]
+
+
 def fetch_db_names(boss_ids: list[int], name_only_en: list[str]):
-    """Return (id->cn, en_lower->(id, cn|None), en_lower->template_en)."""
+    """Return (id->cn, en_lower->(id, cn|None))."""
     id_cn: dict[int, str] = {}
     en_to_row: dict[str, tuple[int, str | None]] = {}
     conn = pymysql.connect(
@@ -227,50 +292,75 @@ def fetch_db_names(boss_ids: list[int], name_only_en: list[str]):
         user="mangos",
         password="mangos",
         database="tw_world",
-        charset="utf8",
+        charset="utf8mb4",
         connect_timeout=5,
     )
     try:
         cur = conn.cursor()
         if boss_ids:
-            # chunk to avoid huge IN lists
             for i in range(0, len(boss_ids), 400):
                 chunk = boss_ids[i : i + 400]
                 ph = ",".join(["%s"] * len(chunk))
                 cur.execute(
                     f"""
-                    SELECT ct.entry, ct.name, lc.name_loc4
+                    SELECT ct.entry, ct.name, lc.name_loc4, ct.rank
                     FROM creature_template ct
                     LEFT JOIN locales_creature lc ON lc.entry = ct.entry
                     WHERE ct.entry IN ({ph})
                     """,
                     chunk,
                 )
-                for entry, en, cn in cur.fetchall():
+                for entry, en, cn, _rank in cur.fetchall():
                     if cn and cn.strip():
                         id_cn[int(entry)] = cn.strip()
                     if en:
-                        en_to_row[en.lower()] = (int(entry), (cn.strip() if cn and cn.strip() else None))
+                        en_to_row[en.lower()] = (
+                            int(entry),
+                            (cn.strip() if cn and cn.strip() else None),
+                        )
 
-        # Resolve name-only English labels via template name (exact, case-insensitive)
-        unresolved = [n for n in name_only_en if n not in en_to_row]
+        unresolved = [n for n in name_only_en if n not in en_to_row and n not in SKIP_NAMES]
         for n in unresolved:
-            cur.execute(
-                """
-                SELECT ct.entry, ct.name, lc.name_loc4
-                FROM creature_template ct
-                LEFT JOIN locales_creature lc ON lc.entry = ct.entry
-                WHERE LOWER(ct.name) = %s
-                LIMIT 3
-                """,
-                (n,),
+            picked = None
+            for variant in _normalize_en_name(n):
+                cur.execute(
+                    """
+                    SELECT ct.entry, ct.name, lc.name_loc4, ct.rank
+                    FROM creature_template ct
+                    LEFT JOIN locales_creature lc ON lc.entry = ct.entry
+                    WHERE LOWER(ct.name) = LOWER(%s)
+                    LIMIT 8
+                    """,
+                    (variant,),
+                )
+                picked = _pick_creature_row(list(cur.fetchall()))
+                if picked:
+                    break
+            if not picked:
+                # Apostrophe-insensitive: Sanv Tas'dal / Peroth'arn
+                cur.execute(
+                    """
+                    SELECT ct.entry, ct.name, lc.name_loc4, ct.rank
+                    FROM creature_template ct
+                    LEFT JOIN locales_creature lc ON lc.entry = ct.entry
+                    WHERE REPLACE(REPLACE(LOWER(ct.name), CHAR(39), ''), CHAR(8217), '')
+                        = REPLACE(REPLACE(LOWER(%s), CHAR(39), ''), CHAR(8217), '')
+                    LIMIT 8
+                    """,
+                    (n,),
+                )
+                picked = _pick_creature_row(list(cur.fetchall()))
+            if not picked:
+                continue
+            entry, en, cn, _rank = picked
+            en_to_row[n] = (
+                int(entry),
+                (cn.strip() if cn and cn.strip() else None),
             )
-            rows = cur.fetchall()
-            if len(rows) == 1:
-                entry, en, cn = rows[0]
-                en_to_row[en.lower()] = (
-                    int(entry),
-                    (cn.strip() if cn and cn.strip() else None),
+            if en:
+                en_to_row.setdefault(
+                    en.lower(),
+                    (int(entry), (cn.strip() if cn and cn.strip() else None)),
                 )
     finally:
         conn.close()
